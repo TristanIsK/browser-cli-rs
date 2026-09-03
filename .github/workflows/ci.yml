@@ -39,15 +39,14 @@ jobs:
         run: |
           test_dir="$(mktemp -d)"
           trap 'rm -rf "$test_dir"' EXIT
-          mkdir -p "$test_dir/skill/scripts" "$test_dir/fake-path"
+          mkdir -p "$test_dir/skill/scripts" "$test_dir/skill/bin" "$test_dir/fake-path"
           cp skills/lexmount-browser/scripts/doctor.sh "$test_dir/skill/scripts/doctor.sh"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$*"\n' > "$test_dir/skill/bin/browser-cli"
+          chmod +x "$test_dir/skill/bin/browser-cli"
           ln -s /usr/bin/true "$test_dir/fake-path/browser-cli"
-          set +e
           output="$(PATH="$test_dir/fake-path:/usr/bin:/bin" "$test_dir/skill/scripts/doctor.sh")"
-          status=$?
-          set -e
-          test "$status" -eq 2
-          test "$output" = '{"ok":false,"error":"unsupported_platform","message":"This Skill supports macOS arm64 through scripts/doctor.sh and Windows x64 through scripts/doctor.ps1."}'
+          test "$output" = 'doctor'
+          grep -Fq 'Linux-x86_64) target="x86_64-unknown-linux-musl"' skills/lexmount-browser/scripts/bootstrap.sh
           ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
           ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
       - name: Verify runtime packaging contract
@@ -84,6 +83,21 @@ jobs:
           $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "browser-cli-bootstrap"
           & .\skills\lexmount-browser\scripts\bootstrap.ps1
           & (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR "browser-cli.exe") version
+
+  linux-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Bootstrap static Linux x64 binary from COS
+        run: |
+          published_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          test -n "$published_tag"
+          export LEXMOUNT_BROWSER_CLI_VERSION="${published_tag#v}"
+          export LEXMOUNT_BROWSER_CLI_INSTALL_DIR="$RUNNER_TEMP/browser-cli-bootstrap"
+          ./skills/lexmount-browser/scripts/bootstrap.sh
+          "$LEXMOUNT_BROWSER_CLI_INSTALL_DIR/browser-cli" version
 
   linux-release:
     runs-on: ubuntu-22.04

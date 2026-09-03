@@ -17,6 +17,7 @@ Do not infer `<skill-root>` from the working directory.
 Select the native Rust binary for the current platform:
 
 - macOS arm64: run `sh "<skill-root>/scripts/bootstrap.sh"` when `<skill-root>/bin/browser-cli` is missing, then invoke `"<skill-root>/bin/browser-cli"`.
+- Linux x64: run `sh "<skill-root>/scripts/bootstrap.sh"` when `<skill-root>/bin/browser-cli` is missing, then invoke `"<skill-root>/bin/browser-cli"`.
 - Windows x64: run `& "<skill-root>\scripts\bootstrap.ps1"` in PowerShell when `<skill-root>\bin\browser-cli.exe` is missing, then invoke `& "<skill-root>\bin\browser-cli.exe"`.
 
 Both bootstrap scripts download the fixed release version from Tencent Cloud COS and verify its SHA-256 digest.
@@ -24,12 +25,12 @@ The Agent-specific locator is needed to form the initial absolute command. Once
 started, the bootstrap and doctor scripts locate the Skill directory from their
 own file location.
 
-Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected absolute path as `browser-cli`; resolve it before running commands and do not assume it is on `PATH`.
+Do not run the binary for another platform. All platform binaries emit JSON. The examples below abbreviate the selected absolute path as `browser-cli`; resolve it before running commands and do not assume it is on `PATH`.
 
 ## Setup
 
 1. Resolve `<skill-root>` from this `SKILL.md` and select the matching platform paths above.
-2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64 or `& "<skill-root>\scripts\doctor.ps1"` in Windows PowerShell.
+2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64 or Linux x64, or `& "<skill-root>\scripts\doctor.ps1"` in Windows PowerShell.
 3. If credentials are missing, run `browser-cli auth login`. Pass `--client-name "<agent-name>"` when the current Agent has a user-facing name; otherwise the CLI uses `Agent`. Let the user approve in their browser. Never ask them to paste an API key into chat.
 4. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
 

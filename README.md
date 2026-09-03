@@ -30,8 +30,9 @@ The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP
 ./scripts/package-skill.sh
 ```
 
-The ZIP contains `SKILL.md`, references, and platform bootstrap scripts at its
-archive root. Native executables are published separately and are not placed in
+The ZIP contains `SKILL.md`, references, and bootstrap scripts for macOS arm64,
+Linux x64, and Windows x64 at its archive root. Native executables are published
+separately and are not placed in
 the Skill ZIP. On first use, the matching bootstrap script downloads the pinned
 release from Tencent Cloud COS and verifies its SHA-256 digest. Set
 `LEXMOUNT_BROWSER_CLI_VERSION` or `LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL` only
