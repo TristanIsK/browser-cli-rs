@@ -68,22 +68,25 @@ jobs:
 
   windows-bootstrap:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Test published bootstrap version selection
+        shell: powershell
+        run: .\.github\scripts\test-select-bootstrap-version.ps1
       - name: Bootstrap from COS with Windows PowerShell 5.1
         shell: powershell
         run: |
           if ($PSVersionTable.PSVersion.Major -ne 5) { throw "Expected Windows PowerShell 5.1" }
-          # The current release tag may exist before its COS assets are uploaded.
-          # Bootstrap against the previous published tag to avoid that race.
-          $publishedTag = git tag --list "v*" --sort=-version:refname | Select-Object -Skip 1 -First 1
-          if (-not $publishedTag) { throw "No previous published version tag found" }
-          $env:LEXMOUNT_BROWSER_CLI_VERSION = $publishedTag.TrimStart('v')
+          # Tags can precede uploads or refer to releases with missing assets.
+          $env:LEXMOUNT_BROWSER_CLI_VERSION = & .\.github\scripts\select-bootstrap-version.ps1
+          Write-Host "Testing published browser-cli $env:LEXMOUNT_BROWSER_CLI_VERSION"
           $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "browser-cli-bootstrap"
           & .\skills\lexmount-browser\scripts\bootstrap.ps1
           & (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR "browser-cli.exe") version
+          if ($LASTEXITCODE -ne 0) { throw "Installed browser-cli version check failed" }
 
   linux-release:
     runs-on: ubuntu-22.04
