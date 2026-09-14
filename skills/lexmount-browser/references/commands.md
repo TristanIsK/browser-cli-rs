@@ -42,6 +42,41 @@ browser-cli action eval --session-id ID --expression JS
 browser-cli action raw --session-id ID --method CDP_METHOD --params-json JSON
 ```
 
+## Page selection
+
+Requires a binary whose `browser-cli action --help` lists `--target-id`. The
+published 1.1.15 binary does not include this feature; do not send unsupported
+flags or assume the current bootstrap downloads an unreleased source change.
+
+Every `action` above accepts optional `--target-id PAGE_ID`, before or after the
+action subcommand. It selects an existing page inside `--session-id`; it is not
+a replacement for the browser session ID. JSON output shapes are unchanged.
+
+```text
+browser-cli session targets --session-id SESSION_ID
+browser-cli action snapshot --session-id SESSION_ID --target-id PAGE_ID
+browser-cli action click --session-id SESSION_ID --target-id PAGE_ID --selector CSS
+browser-cli session targets --session-id SESSION_ID
+browser-cli action wait-selector --session-id SESSION_ID --target-id NEW_PAGE_ID --selector CSS
+browser-cli action snapshot --session-id SESSION_ID --target-id NEW_PAGE_ID
+```
+
+Use the page entry's `id` in the DevTools target listing (`targetId` when using
+CDP `Target.getTargets` directly). Match the expected URL/title and page type,
+not the first/last position or an attached CDP `sessionId`. A popup may take time
+to appear or navigate: refresh the listing within a bounded task timeout, then
+wait for the required selector/text on the selected page. If several pages are
+plausible, inspect them before choosing; do not blindly retry a state-changing
+click. Pass the chosen ID on each subsequent action; selection is not persisted.
+
+Without this option, the CLI keeps its original default: attach to the first
+page returned by CDP, or create `about:blank` if no page exists. It does not
+automatically follow a newly opened tab. A missing/closed explicit target fails
+with `not_found`; a non-page target fails with `configuration_error`. A target
+closed during attachment can produce `cdp_error`. The CLI never falls back to
+another page or creates a page when an explicit target cannot be used. Re-list
+targets and reassess the task instead of dropping `--target-id` to bypass errors.
+
 Use temporary sessions for public browsing. Use a dedicated persistent Context per account or purpose; avoid sharing one read-write Context between parallel tasks.
 
 `wait-text` uses case-insensitive normalized contains matching by default. Add

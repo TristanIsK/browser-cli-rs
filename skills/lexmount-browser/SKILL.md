@@ -44,6 +44,16 @@ Read [authentication.md](references/authentication.md) only when login or creden
 5. Take screenshots when visual confirmation matters.
 6. Close temporary sessions with `browser-cli session close`. A read-write Context saves state on normal session close.
 
+For multi-tab work, first check that `browser-cli action --help` lists
+`--target-id` (older published binaries do not support it). If absent, report
+the capability limitation; default-page actions are not an equivalent substitute.
+With support available, inspect `session targets`, select the page matching the task,
+and pass its ID as `--target-id` on each action. After a click opens a new tab,
+list targets again and explicitly select that page before waiting or inspecting;
+an unchanged source page alone does not mean the click failed. See
+[page selection](references/commands.md#page-selection) for discovery, compatibility,
+and missing-target handling. Do not infer the active page from list order.
+
 ## Safety
 
 - Ask before submitting purchases, publishing content, deleting remote data, or changing account/security settings.

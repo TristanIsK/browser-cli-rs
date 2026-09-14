@@ -31,7 +31,26 @@ pub struct WaitTextOptions<'a> {
 }
 
 impl Cdp {
+    /// Connect to the first page, creating a blank page if necessary.
+    ///
+    /// This preserves the original single-page default. Use `connect_to_target`
+    /// to address a particular tab without depending on target enumeration order.
     pub fn connect(url: &str) -> Result<Self> {
+        Self::connect_with_target(url, None)
+    }
+
+    /// Connect to an existing page in this browser session.
+    ///
+    /// Missing, closed, or non-page targets return an error; they never fall back
+    /// to another page or cause a blank page to be created.
+    pub fn connect_to_target(url: &str, target_id: &str) -> Result<Self> {
+        if target_id.trim().is_empty() {
+            return Err(Error::Config("target ID must not be empty".into()));
+        }
+        Self::connect_with_target(url, Some(target_id))
+    }
+
+    fn connect_with_target(url: &str, requested_target: Option<&str>) -> Result<Self> {
         let (socket, _) = tungstenite::connect(url)?;
         let mut client = Self {
             socket,
@@ -40,17 +59,7 @@ impl Cdp {
             events: VecDeque::new(),
         };
         let targets = client.command_root("Target.getTargets", json!({}))?;
-        let target_id = targets
-            .get("targetInfos")
-            .and_then(Value::as_array)
-            .and_then(|items| {
-                items
-                    .iter()
-                    .find(|v| v.get("type").and_then(Value::as_str) == Some("page"))
-            })
-            .and_then(|v| v.get("targetId"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let target_id = select_page_target(&targets, requested_target)?;
         let target_id = match target_id {
             Some(id) => id,
             None => client
@@ -280,6 +289,31 @@ impl Cdp {
     }
 }
 
+fn select_page_target(targets: &Value, requested: Option<&str>) -> Result<Option<String>> {
+    let pages = targets.get("targetInfos").and_then(Value::as_array);
+    if let Some(id) = requested {
+        let pages = pages
+            .ok_or_else(|| Error::Cdp("Target.getTargets response missing targetInfos".into()))?;
+        let target = pages
+            .iter()
+            .find(|item| item["targetId"].as_str() == Some(id));
+        match target {
+            Some(item) if item["type"] == "page" => Ok(Some(id.to_owned())),
+            Some(_) => Err(Error::Config(format!(
+                "target {id} is not a page; inspect `session targets` and select a page target"
+            ))),
+            None => Err(Error::NotFound(format!(
+                "page target {id} is not available in this session; inspect `session targets`"
+            ))),
+        }
+    } else {
+        Ok(pages
+            .and_then(|items| items.iter().find(|item| item["type"] == "page"))
+            .and_then(|item| item["targetId"].as_str())
+            .map(str::to_owned))
+    }
+}
+
 fn text_matches(candidate: &str, query: &str, exact: bool, case_sensitive: bool) -> bool {
     let normalize = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut haystack = normalize(candidate);
@@ -297,7 +331,81 @@ fn text_matches(candidate: &str, query: &str, exact: bool, case_sensitive: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::text_matches;
+    use super::{select_page_target, text_matches};
+    use crate::Error;
+    use serde_json::json;
+
+    #[test]
+    fn explicit_page_selection_does_not_depend_on_order() {
+        let home = json!({"type":"page","targetId":"home"});
+        let result = json!({"type":"page","targetId":"result"});
+        for items in [vec![home.clone(), result.clone()], vec![result, home]] {
+            let targets = json!({"targetInfos":items});
+            assert_eq!(
+                select_page_target(&targets, Some("result")).unwrap(),
+                Some("result".into())
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_non_page_target_never_falls_back() {
+        let targets = json!({"targetInfos":[
+            {"type":"service_worker","targetId":"worker"},
+            {"type":"page","targetId":"home"}
+        ]});
+        assert!(matches!(
+            select_page_target(&targets, Some("closed")),
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            select_page_target(&targets, Some("worker")),
+            Err(Error::Config(_))
+        ));
+        assert!(matches!(
+            select_page_target(&json!({"targetInfos":[]}), Some("missing")),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn unspecified_target_preserves_first_page_and_empty_browser_defaults() {
+        let targets = json!({"targetInfos":[
+            {"type":"service_worker","targetId":"worker"},
+            {"type":"page","targetId":"home"},
+            {"type":"page","targetId":"result"}
+        ]});
+        assert_eq!(
+            select_page_target(&targets, None).unwrap(),
+            Some("home".into())
+        );
+        assert_eq!(
+            select_page_target(&json!({"targetInfos":[]}), None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_explicit_target_listing_is_rejected() {
+        assert!(matches!(
+            select_page_target(&json!({}), Some("page")),
+            Err(Error::Cdp(_))
+        ));
+        assert!(matches!(
+            select_page_target(&json!({"targetInfos":null}), Some("page")),
+            Err(Error::Cdp(_))
+        ));
+    }
+
+    #[test]
+    fn empty_explicit_target_is_rejected_before_connecting() {
+        for id in ["", "   "] {
+            assert!(matches!(
+                super::Cdp::connect_to_target("not-a-websocket", id),
+                Err(Error::Config(_))
+            ));
+        }
+    }
 
     #[test]
     fn wait_text_defaults_to_case_insensitive_contains() {
