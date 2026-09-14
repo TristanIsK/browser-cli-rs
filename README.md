@@ -24,10 +24,12 @@ surface.
 
 ## Select a page in a multi-tab session
 
-This feature is available in source builds with `--target-id` listed by
-`browser-cli action --help`; the published 1.1.15 binary does not have it. This
-feature PR does not change release versions or bootstrap pins. When publishing
-the feature, update the package version and both bootstrap pins together.
+Explicit page selection is introduced in version 1.2.0. Check that the installed
+binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
+binary does not have it. The package version and both bootstrap scripts target
+1.2.0 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.2.0 only after its binaries and checksums are published
+to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
 target ID from `session targets` (the page entry's `id` in a DevTools `/json`
@@ -93,6 +95,14 @@ the Skill ZIP. On first use, the matching bootstrap script downloads the pinned
 release from Tencent Cloud COS and verifies its SHA-256 digest. Set
 `LEXMOUNT_BROWSER_CLI_VERSION` or `LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL` only
 when testing a different published release or mirror.
+
+Updating the Skill files does not replace an existing Skill-local executable.
+After the pinned release is available, an authorized upgrade can rerun the
+matching bundled bootstrap script, then verify `browser-cli version` and
+`browser-cli action --help`. If the release is not available, report that
+dependency rather than substituting an older binary for a task needing the new
+feature. Release tags must match the Cargo and bootstrap versions; never
+overwrite an existing release with changed binaries.
 
 Agents resolve bundled scripts and binaries from the directory containing the
 loaded `SKILL.md`: Codex uses the absolute source path supplied in the Skill

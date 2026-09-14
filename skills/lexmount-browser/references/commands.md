@@ -44,9 +44,16 @@ browser-cli action raw --session-id ID --method CDP_METHOD --params-json JSON
 
 ## Page selection
 
-Requires a binary whose `browser-cli action --help` lists `--target-id`. The
-published 1.1.15 binary does not include this feature; do not send unsupported
-flags or assume the current bootstrap downloads an unreleased source change.
+Introduced in 1.2.0; requires a binary whose `browser-cli action --help` lists
+`--target-id`. The published 1.1.15 binary does not include this feature.
+Check the actual Skill-local binary, not just the version of these instructions.
+
+For an authorized upgrade, rerun the matching Skill-local bootstrap script only
+after its pinned 1.2.0 release assets are available, then verify `version` and
+`action --help`. A merged PR or a newer Skill file does not publish or replace
+the binary. If the release is unavailable or the upgrade is not authorized,
+report the dependency or capability limitation; do not send unsupported flags
+or drop the target selection to continue against a different page.
 
 Every `action` above accepts optional `--target-id PAGE_ID`, before or after the
 action subcommand. It selects an existing page inside `--session-id`; it is not

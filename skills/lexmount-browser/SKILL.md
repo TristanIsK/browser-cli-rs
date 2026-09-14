@@ -45,8 +45,10 @@ Read [authentication.md](references/authentication.md) only when login or creden
 6. Close temporary sessions with `browser-cli session close`. A read-write Context saves state on normal session close.
 
 For multi-tab work, first check that `browser-cli action --help` lists
-`--target-id` (older published binaries do not support it). If absent, report
-the capability limitation; default-page actions are not an equivalent substitute.
+`--target-id`, introduced in 1.2.0. Updating the Skill does not upgrade an existing
+binary. If absent, follow the [upgrade guidance](references/commands.md#page-selection)
+and report the limitation if an upgrade cannot be completed; default-page actions
+are not an equivalent substitute.
 With support available, inspect `session targets`, select the page matching the task,
 and pass its ID as `--target-id` on each action. After a click opens a new tab,
 list targets again and explicitly select that page before waiting or inspecting;
