@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${LEXMOUNT_BROWSER_CLI_VERSION:-1.1.15}"
+version="${LEXMOUNT_BROWSER_CLI_VERSION:-1.2.0}"
 download_base_url="${LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL:-https://cli-bin-1377899528.cos.ap-nanjing.myqcloud.com/releases/browser-cli}"
 repo="${download_base_url%/}/v${version}"
 case "$(uname -s)-$(uname -m)" in

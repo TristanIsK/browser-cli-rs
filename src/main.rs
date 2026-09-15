@@ -37,6 +37,9 @@ enum Command {
         command: ContextCommand,
     },
     Action {
+        /// Operate on this page target from `session targets`, not the default page.
+        #[arg(long, global = true)]
+        target_id: Option<String>,
         #[command(subcommand)]
         command: ActionCommand,
     },
@@ -306,7 +309,9 @@ fn run(cli: Cli) -> Result<Value> {
         Command::Doctor => doctor(),
         Command::Session { command } => run_session(Client::from_env()?, command),
         Command::Context { command } => run_context(Client::from_env()?, command),
-        Command::Action { command } => run_action(Client::from_env()?, command),
+        Command::Action { command, target_id } => {
+            run_action(Client::from_env()?, command, target_id.as_deref())
+        }
     }
 }
 
@@ -475,7 +480,7 @@ fn run_context(client: Client, command: ContextCommand) -> Result<Value> {
     }
 }
 
-fn run_action(client: Client, command: ActionCommand) -> Result<Value> {
+fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -> Result<Value> {
     let session_id = match &command {
         ActionCommand::OpenUrl { session_id, .. }
         | ActionCommand::Eval { session_id, .. }
@@ -492,7 +497,10 @@ fn run_action(client: Client, command: ActionCommand) -> Result<Value> {
     let ws = session
         .ws
         .ok_or_else(|| Error::Cdp(format!("session {session_id} has no CDP WebSocket URL")))?;
-    let mut cdp = Cdp::connect(&ws)?;
+    let mut cdp = match target_id {
+        Some(id) => Cdp::connect_to_target(&ws, id)?,
+        None => Cdp::connect(&ws)?,
+    };
     match command {
         ActionCommand::OpenUrl {
             url, timeout_ms, ..
@@ -575,6 +583,73 @@ fn print_json<T: Serialize>(value: &T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_target_flag_is_accepted_before_or_after_action_subcommand() {
+        for args in [
+            vec![
+                "browser-cli",
+                "action",
+                "--target-id",
+                "result",
+                "eval",
+                "--session-id",
+                "browser",
+                "--expression",
+                "location.href",
+            ],
+            vec![
+                "browser-cli",
+                "action",
+                "eval",
+                "--session-id",
+                "browser",
+                "--expression",
+                "location.href",
+                "--target-id",
+                "result",
+            ],
+        ] {
+            let Command::Action { target_id, .. } = Cli::try_parse_from(args).unwrap().command
+            else {
+                panic!("expected action");
+            };
+            assert_eq!(target_id.as_deref(), Some("result"));
+        }
+    }
+
+    #[test]
+    fn existing_action_syntax_has_no_explicit_target() {
+        let Command::Action { target_id, .. } = Cli::try_parse_from([
+            "browser-cli",
+            "action",
+            "snapshot",
+            "--session-id",
+            "browser",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected action");
+        };
+        assert!(target_id.is_none());
+    }
+
+    #[test]
+    fn page_target_option_is_not_accepted_by_session_commands() {
+        assert!(
+            Cli::try_parse_from([
+                "browser-cli",
+                "session",
+                "targets",
+                "--session-id",
+                "browser",
+                "--target-id",
+                "result"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn auth_login_defaults_client_name_to_agent() {
