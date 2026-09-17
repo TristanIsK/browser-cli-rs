@@ -1,0 +1,14 @@
+{
+  "id": "lexmount-cloud-browser",
+  "name": "LexMount Cloud Browser",
+  "version": "1.2.0",
+  "description": "Operate LexMount cloud browsers through the bundled Skill and CLI. Requires LexMount service authorization.",
+  "skills": [
+    "./skills/lexmount-browser"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

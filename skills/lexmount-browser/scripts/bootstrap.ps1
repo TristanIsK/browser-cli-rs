@@ -44,5 +44,6 @@ try {
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
   Copy-Item (Join-Path $tmp $asset) (Join-Path $installDir "browser-cli.exe") -Force
   & (Join-Path $installDir "browser-cli.exe") version
+  if ($LASTEXITCODE -ne 0) { throw "Installed browser-cli failed verification (exit $LASTEXITCODE)" }
   Write-Output "Installed browser-cli to $installDir\browser-cli.exe"
 } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }

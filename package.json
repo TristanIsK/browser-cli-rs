@@ -1,0 +1,35 @@
+{
+  "name": "@tristanisk/lexmount-cloud-browser",
+  "version": "1.2.0",
+  "description": "Operate LexMount cloud browsers through the bundled Skill and CLI. Requires LexMount service authorization.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lexmount/browser-cli-rs.git"
+  },
+  "files": [
+    "openclaw.plugin.json",
+    "plugins/openclaw",
+    "skills/lexmount-browser/SKILL.md",
+    "skills/lexmount-browser/scripts",
+    "skills/lexmount-browser/references",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./plugins/openclaw/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.7.1"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1"
+    },
+    "install": {
+      "clawhubSpec": "@tristanisk/lexmount-cloud-browser",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.7.1"
+    }
+  }
+}
