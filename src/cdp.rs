@@ -12,6 +12,8 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use crate::{Error, Result};
 
+mod proxy;
+
 pub struct Cdp {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     next_id: u64,
@@ -51,7 +53,7 @@ impl Cdp {
     }
 
     fn connect_with_target(url: &str, requested_target: Option<&str>) -> Result<Self> {
-        let (socket, _) = tungstenite::connect(url)?;
+        let socket = proxy::connect(url)?;
         let mut client = Self {
             socket,
             next_id: 1,

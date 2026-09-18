@@ -22,6 +22,23 @@ are never printed.
 All commands emit one JSON document. Run `browser-cli --help` for the complete
 surface.
 
+## Cloud runtime proxies
+
+Source builds route CDP WebSocket connections through the environment's HTTP
+CONNECT proxy. `wss://` uses `HTTPS_PROXY` and `ws://` uses `HTTP_PROXY`, with
+`ALL_PROXY` as the fallback; lowercase variables and `NO_PROXY` are handled by
+the same proxy matcher used by the HTTP client. Target DNS is resolved by the
+proxy. Proxy Basic authentication stays on CONNECT and is not forwarded to CDP.
+TLS certificate and hostname checks remain enabled. A rejected proxy request
+never falls back to a direct connection.
+
+This transport currently accepts `http://` proxies only; HTTPS-to-proxy and
+SOCKS proxies return an explicit unsupported configuration error. The CONNECT
+stage has a 15-second deadline and bounded headers; TLS/WebSocket handshake I/O
+has a 15-second timeout. Existing direct connections are unchanged when no proxy
+matches. These changes require a new CLI release; published 1.1.15 and 1.2.0
+binaries do not acquire them by updating Skill instructions.
+
 ## Select a page in a multi-tab session
 
 Explicit page selection is introduced in version 1.2.0. Check that the installed
