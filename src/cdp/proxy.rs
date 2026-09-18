@@ -207,7 +207,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match listener.accept() {
-                Ok((stream, _)) => return stream,
+                Ok((stream, _)) => {
+                    // Windows accepted sockets inherit the listener's mode.
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "expected another connection");
                     thread::sleep(Duration::from_millis(10));
