@@ -42,9 +42,35 @@ fn connect_with_matcher(
     url: &str,
     matcher: &Matcher,
 ) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+    let mut url = url.to_owned();
+    // Match tungstenite::connect's three-hop limit, but choose the route anew
+    // for every destination, including redirects to/from NO_PROXY hosts.
+    for attempt in 0..=3 {
+        match connect_once(&url, matcher) {
+            Err(Error::WebSocket(error)) if attempt < 3 => {
+                if let tungstenite::Error::Http(response) = error.as_ref()
+                    && response.status().is_redirection()
+                    && let Some(location) = response.headers().get("Location")
+                {
+                    url = location
+                        .to_str()
+                        .map_err(|_| Error::Config("invalid CDP redirect Location".into()))?
+                        .to_owned();
+                    continue;
+                }
+                return Err(Error::WebSocket(error));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("last connection attempt always returns")
+}
+
+fn connect_once(url: &str, matcher: &Matcher) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let destination = destination(url)?;
     let Some(proxy) = matcher.intercept(&destination) else {
-        return Ok(tungstenite::connect(url)?.0);
+        // The outer loop owns redirects so a direct hop cannot skip proxy rules.
+        return Ok(tungstenite::client::connect_with_config(url, None, 0)?.0);
     };
     // ponytail: implement the HTTP CONNECT proxy used by cloud runtimes. Other
     // proxy schemes fail explicitly; never silently retry a proxy failure direct.
@@ -174,6 +200,145 @@ mod tests {
             bytes.push(byte[0]);
         }
         String::from_utf8(bytes).unwrap()
+    }
+
+    fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "expected another connection");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn redirects_rematch_proxy_and_no_proxy_for_every_hop() {
+        let proxy = listener();
+        let direct = listener();
+        let direct_url = format!("ws://{}/middle", direct.local_addr().unwrap());
+        let matcher = Matcher::builder()
+            .http(format!("http://{}", proxy.local_addr().unwrap()))
+            .no("127.0.0.1")
+            .build();
+        let proxy_server = thread::spawn(move || {
+            for host in ["entry.invalid", "next.invalid", "final.invalid"] {
+                let mut stream = accept_with_timeout(&proxy);
+                assert!(
+                    read_headers(&mut stream)
+                        .starts_with(&format!("CONNECT {host}:80 HTTP/1.1\r\n"))
+                );
+                stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                if host != "final.invalid" {
+                    read_headers(&mut stream);
+                    let location = if host == "entry.invalid" {
+                        direct_url.as_str()
+                    } else {
+                        "ws://final.invalid/cdp"
+                    };
+                    write!(
+                        stream,
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .unwrap();
+                } else {
+                    let mut socket = tungstenite::accept(stream).unwrap();
+                    socket.send(Message::text("redirected")).unwrap();
+                }
+            }
+        });
+        let direct_server = thread::spawn(move || {
+            let mut stream = accept_with_timeout(&direct);
+            let request = read_headers(&mut stream);
+            assert!(request.starts_with("GET /middle HTTP/1.1\r\n"));
+            assert!(!request.to_ascii_lowercase().contains("proxy-authorization"));
+            stream.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: ws://next.invalid/cdp\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let mut socket = connect_with_matcher("ws://entry.invalid/cdp", &matcher).unwrap();
+        assert_eq!(socket.read().unwrap().into_text().unwrap(), "redirected");
+        proxy_server.join().unwrap();
+        direct_server.join().unwrap();
+    }
+
+    #[test]
+    fn redirects_stop_after_three_hops_for_proxy_and_direct_connections() {
+        for proxied in [true, false] {
+            let endpoint = listener();
+            let address = endpoint.local_addr().unwrap();
+            let matcher = if proxied {
+                Matcher::builder().all(format!("http://{address}")).build()
+            } else {
+                Matcher::builder().build()
+            };
+            let url = if proxied {
+                "ws://loop.invalid/cdp".to_owned()
+            } else {
+                format!("ws://{address}/cdp")
+            };
+            let location = url.clone();
+            let server = thread::spawn(move || {
+                for _ in 0..4 {
+                    let mut stream = accept_with_timeout(&endpoint);
+                    if proxied {
+                        assert!(read_headers(&mut stream).starts_with("CONNECT "));
+                        stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                    }
+                    assert!(read_headers(&mut stream).starts_with("GET "));
+                    write!(
+                        stream,
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+                endpoint
+            });
+            let error = connect_with_matcher(&url, &matcher).unwrap_err();
+            assert!(matches!(error, Error::WebSocket(ref error)
+                if matches!(error.as_ref(), tungstenite::Error::Http(response)
+                    if response.status().as_u16() == 302)));
+            let endpoint = server.join().unwrap();
+            assert_eq!(
+                endpoint.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_redirect_locations_fail_without_another_connection() {
+        for location in [
+            "",
+            "Location: /relative\r\n",
+            "Location: https://browser.invalid/\r\n",
+        ] {
+            let proxy = listener();
+            let matcher = Matcher::builder()
+                .all(format!("http://{}", proxy.local_addr().unwrap()))
+                .build();
+            let server = thread::spawn(move || {
+                let mut stream = accept_with_timeout(&proxy);
+                read_headers(&mut stream);
+                stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                read_headers(&mut stream);
+                write!(
+                    stream,
+                    "HTTP/1.1 302 Found\r\n{location}Content-Length: 0\r\n\r\n"
+                )
+                .unwrap();
+                proxy
+            });
+            assert!(connect_with_matcher("ws://browser.invalid/", &matcher).is_err());
+            let proxy = server.join().unwrap();
+            assert_eq!(
+                proxy.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
     }
 
     #[test]
