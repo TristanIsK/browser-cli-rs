@@ -1,6 +1,6 @@
 [package]
 name = "lexmount-browser"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 license = "MIT"
 description = "Native Rust SDK and CLI for Lexmount cloud browsers"

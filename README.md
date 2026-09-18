@@ -24,7 +24,7 @@ surface.
 
 ## Cloud runtime proxies
 
-Source builds route CDP WebSocket connections through the environment's HTTP
+Version 1.2.1 routes CDP WebSocket connections through the environment's HTTP
 CONNECT proxy. `wss://` uses `HTTPS_PROXY` and `ws://` uses `HTTP_PROXY`, with
 `ALL_PROXY` as the fallback; lowercase variables and `NO_PROXY` are handled by
 the same proxy matcher used by the HTTP client. Target DNS is resolved by the
@@ -44,8 +44,8 @@ binaries do not acquire them by updating Skill instructions.
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.2.0 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.2.0 only after its binaries and checksums are published
+1.2.1 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.2.1 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
