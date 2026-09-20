@@ -1208,12 +1208,14 @@ checksum = "db13adb97ab515a3691f56e4dbab09283d0b86cb45abd991d8634a9d6f501760"
 
 [[package]]
 name = "lexmount-browser"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
  "dirs",
+ "httparse",
  "httpmock",
+ "hyper-util",
  "open",
  "rand 0.9.5",
  "reqwest",

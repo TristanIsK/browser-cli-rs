@@ -15,7 +15,15 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo test --all-targets --locked
+      - name: Verify tests ignore inherited proxy configuration
+        run: >-
+          env -u NO_PROXY -u no_proxy
+          HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 ALL_PROXY=http://127.0.0.1:1
+          http_proxy=http://127.0.0.1:1 https_proxy=http://127.0.0.1:1 all_proxy=http://127.0.0.1:1
+          cargo test --all-targets --locked --offline
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Verify downstream TLS backend compatibility
+        run: ./tests/test_tls_backends.py
       - name: Verify release target contract
         run: |
           grep -q 'x86_64-unknown-linux-musl' .github/workflows/release.yml

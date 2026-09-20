@@ -124,6 +124,12 @@ fn pages(cdp: &mut Cdp) -> Vec<Value> {
 #[test]
 #[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
 fn search_popup_can_be_selected_across_cli_invocations_and_closed_safely() {
+    if support::isolated_test(
+        "search_popup_can_be_selected_across_cli_invocations_and_closed_safely",
+        Duration::from_secs(120),
+    ) {
+        return;
+    }
     let chromium = std::env::var_os("BROWSER_CLI_TEST_CHROME")
         .expect("set BROWSER_CLI_TEST_CHROME to a local Chrome/Chromium executable");
     let browser = Browser::start(Path::new(&chromium));

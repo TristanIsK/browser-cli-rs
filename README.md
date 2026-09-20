@@ -22,13 +22,48 @@ are never printed.
 All commands emit one JSON document. Run `browser-cli --help` for the complete
 surface.
 
+## Cloud runtime proxies
+
+Version 1.2.1 routes CDP WebSocket connections through the environment's HTTP
+CONNECT proxy. `wss://` uses `HTTPS_PROXY` and `ws://` uses `HTTP_PROXY`, with
+`ALL_PROXY` as the fallback; lowercase variables and `NO_PROXY` are handled by
+the same proxy matcher used by the HTTP client. Target DNS is resolved by the
+proxy. Proxy Basic authentication stays on CONNECT and is not forwarded to CDP.
+TLS certificate and hostname checks remain enabled. A rejected proxy request
+never falls back to a direct connection.
+
+This transport currently accepts `http://` proxies only; HTTPS-to-proxy and
+SOCKS proxies return an explicit unsupported configuration error. Direct and
+proxied connections share one 15-second network connection budget, covering
+DNS, TCP, CONNECT and TLS/WebSocket handshake across all redirects. CONNECT
+headers are limited to 16 KiB. Each blocking network operation uses the remaining
+budget; a slow peer cannot restart it by sending another byte.
+
+OS DNS resolution preserves hosts/VPN configuration. Two process-wide workers
+and four queue slots bound background work. The caller stops waiting at its
+deadline; an in-flight OS lookup cannot be cancelled, and its late result cannot
+open a connection. Expired queued lookups are skipped. If the pool is saturated,
+new hostname lookups fail with `DNS resolver busy; retry later` until workers
+recover. Numeric addresses bypass DNS.
+
+Connection timeouts exit the CLI with status 1 and a JSON error on stderr, e.g.
+`{"ok":false,"error":"timeout","message":"request timed out: CDP connection (stage: proxy_dns, budget: 15s)"}`.
+Stage names distinguish `proxy_dns`/`target_dns`, `proxy_tcp`/`target_tcp`,
+`proxy_connect`, and `websocket_handshake`/`tls_websocket_handshake` without exposing
+URLs or credentials. A connection timeout occurs before any CDP command is sent.
+The budget ends at the WebSocket upgrade: REST session requests, CDP target
+attachment, and later browser actions retain their existing timeout behavior.
+It is not a deadline for an entire CLI command or Agent turn, nor does it trigger
+automatic action retries. These changes require a new CLI release; published
+1.1.15 and 1.2.0 binaries do not acquire them by updating Skill instructions.
+
 ## Select a page in a multi-tab session
 
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.2.0 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.2.0 only after its binaries and checksums are published
+1.2.1 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.2.1 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP

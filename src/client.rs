@@ -420,13 +420,15 @@ mod tests {
     };
 
     fn client(server: &MockServer) -> Client {
-        Client::builder()
+        let mut client = Client::builder()
             .api_key("test-key")
             .project_id("test-project")
             .base_url(server.base_url())
             .region("office-test")
             .build()
-            .unwrap()
+            .unwrap();
+        client.http = HttpClient::builder().no_proxy().build().unwrap();
+        client
     }
 
     #[test]
