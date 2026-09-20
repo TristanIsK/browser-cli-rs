@@ -125,7 +125,10 @@ fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Sock
     stream.set_nodelay(true)?;
     // Retain controls outside the TLS wrapper: downstream feature unification
     // can select native-tls instead of rustls.
-    let timeout_handle = stream.try_clone()?;
+    // Use the same OS socket handle: clearing timeouts through a duplicated
+    // Winsock handle can leave the original handle's timeout active.
+    let stream = Arc::new(stream);
+    let timeout_handle = stream.clone();
     let connected = Arc::new(AtomicBool::new(false));
     let mut stream = ConnectionStream {
         stream,
@@ -220,7 +223,7 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 // loops and peers that keep trickling bytes. Disabled after the WS upgrade.
 #[derive(Debug)]
 pub(super) struct ConnectionStream {
-    stream: TcpStream,
+    stream: Arc<TcpStream>,
     deadline: Instant,
     connected: Arc<AtomicBool>,
 }
@@ -230,7 +233,7 @@ impl Read for ConnectionStream {
         if let Some(deadline) = self.active_deadline() {
             self.stream.set_read_timeout(Some(remaining(deadline)?))?;
         }
-        let result = self.stream.read(buffer);
+        let result = self.stream.as_ref().read(buffer);
         self.finish_io(result)
     }
 }
@@ -240,13 +243,13 @@ impl Write for ConnectionStream {
         if let Some(deadline) = self.active_deadline() {
             self.stream.set_write_timeout(Some(remaining(deadline)?))?;
         }
-        let result = self.stream.write(buffer);
+        let result = self.stream.as_ref().write(buffer);
         self.finish_io(result)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         // TcpStream is unbuffered.
-        let result = self.stream.flush();
+        let result = self.stream.as_ref().flush();
         self.finish_io(result)
     }
 }
