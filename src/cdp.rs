@@ -1,21 +1,20 @@
 use std::{
     collections::VecDeque,
     fs,
-    net::TcpStream,
     path::Path,
     time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
+use tungstenite::Message;
 
 use crate::{Error, Result};
 
 mod proxy;
 
 pub struct Cdp {
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    socket: proxy::Socket,
     next_id: u64,
     target_session_id: String,
     events: VecDeque<Value>,

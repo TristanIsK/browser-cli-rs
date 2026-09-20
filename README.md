@@ -33,11 +33,29 @@ TLS certificate and hostname checks remain enabled. A rejected proxy request
 never falls back to a direct connection.
 
 This transport currently accepts `http://` proxies only; HTTPS-to-proxy and
-SOCKS proxies return an explicit unsupported configuration error. The CONNECT
-stage has a 15-second deadline and bounded headers; TLS/WebSocket handshake I/O
-has a 15-second timeout. Existing direct connections are unchanged when no proxy
-matches. These changes require a new CLI release; published 1.1.15 and 1.2.0
-binaries do not acquire them by updating Skill instructions.
+SOCKS proxies return an explicit unsupported configuration error. Direct and
+proxied connections share one 15-second network connection budget, covering
+DNS, TCP, CONNECT and TLS/WebSocket handshake across all redirects. CONNECT
+headers are limited to 16 KiB. Each blocking network operation uses the remaining
+budget; a slow peer cannot restart it by sending another byte.
+
+OS DNS resolution preserves hosts/VPN configuration. Two process-wide workers
+and four queue slots bound background work. The caller stops waiting at its
+deadline; an in-flight OS lookup cannot be cancelled, and its late result cannot
+open a connection. Expired queued lookups are skipped. If the pool is saturated,
+new hostname lookups fail with `DNS resolver busy; retry later` until workers
+recover. Numeric addresses bypass DNS.
+
+Connection timeouts exit the CLI with status 1 and a JSON error on stderr, e.g.
+`{"ok":false,"error":"timeout","message":"request timed out: CDP connection (stage: proxy_dns, budget: 15s)"}`.
+Stage names distinguish `proxy_dns`/`target_dns`, `proxy_tcp`/`target_tcp`,
+`proxy_connect`, and `websocket_handshake`/`tls_websocket_handshake` without exposing
+URLs or credentials. A connection timeout occurs before any CDP command is sent.
+The budget ends at the WebSocket upgrade: REST session requests, CDP target
+attachment, and later browser actions retain their existing timeout behavior.
+It is not a deadline for an entire CLI command or Agent turn, nor does it trigger
+automatic action retries. These changes require a new CLI release; published
+1.1.15 and 1.2.0 binaries do not acquire them by updating Skill instructions.
 
 ## Select a page in a multi-tab session
 

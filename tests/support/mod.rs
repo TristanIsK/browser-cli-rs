@@ -20,24 +20,62 @@ pub fn cli(api: &str, directory: &Path, arguments: &[&str]) -> Output {
             "LEXMOUNT_BROWSER_CREDENTIALS_FILE",
             directory.join("missing-credentials.json"),
         )
-        .env("NO_PROXY", "127.0.0.1,localhost")
         .env_remove("LEXMOUNT_REGION")
-        .env_remove("HTTP_PROXY")
-        .env_remove("HTTPS_PROXY")
-        .env_remove("ALL_PROXY")
-        .env_remove("http_proxy")
-        .env_remove("https_proxy")
-        .env_remove("all_proxy")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    clear_proxy_env(&mut command);
+    run(command, Duration::from_secs(20))
+}
+
+fn clear_proxy_env(command: &mut Command) {
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ] {
+        command.env_remove(name);
+    }
+}
+
+// Re-run only this SDK test in an isolated process, before starting fixtures.
+// No process-global environment mutation or production localhost bypass.
+#[allow(dead_code)]
+pub fn isolated_test(name: &str, timeout: Duration) -> bool {
+    if std::env::var("BROWSER_CLI_ISOLATED_TEST").as_deref() == Ok(name) {
+        return false;
+    }
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", name, "--include-ignored", "--nocapture"])
+        .env("BROWSER_CLI_ISOLATED_TEST", name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    clear_proxy_env(&mut command);
+    let output = run(command, timeout);
+    assert!(
+        output.status.success(),
+        "isolated test failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
+fn run(mut command: Command, timeout: Duration) -> Output {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
     let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + timeout;
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
             let _ = child.kill();

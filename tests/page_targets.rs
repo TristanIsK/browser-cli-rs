@@ -167,6 +167,12 @@ fn two_pages() -> Value {
 
 #[test]
 fn sdk_selects_the_requested_target_regardless_of_enumeration_order() {
+    if support::isolated_test(
+        "sdk_selects_the_requested_target_regardless_of_enumeration_order",
+        Duration::from_secs(20),
+    ) {
+        return;
+    }
     for reversed in [false, true] {
         let mut targets = two_pages();
         if reversed {
@@ -339,4 +345,62 @@ fn default_cli_still_uses_first_page_or_creates_blank_when_no_pages_exist() {
             .unwrap();
         assert_eq!(attached["params"]["targetId"], selected);
     }
+}
+
+#[test]
+fn connection_timeout_reports_json_failure_without_sending_an_action() {
+    use std::io::Read;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let url = format!(
+        "ws://{}/?token=private-secret",
+        listener.local_addr().unwrap()
+    );
+    let server = api(&url);
+    let worker = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < until => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => panic!("fixture accept: {e}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        // Only a WebSocket HTTP upgrade was sent; no CDP action frame followed.
+        assert!(bytes.starts_with(b"GET /"));
+        assert!(bytes.ends_with(b"\r\n\r\n"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("Page.navigate"));
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let output = support::cli(
+        &server.base_url(),
+        directory.path(),
+        &[
+            "action",
+            "open-url",
+            "--session-id",
+            "browser",
+            "--url",
+            "https://example.test/",
+        ],
+    );
+    assert!(start.elapsed() < Duration::from_secs(19));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let envelope: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(
+        envelope,
+        json!({"ok":false,"error":"timeout",
+        "message":"request timed out: CDP connection (stage: websocket_handshake, budget: 15s)"})
+    );
+    worker.join().unwrap();
 }

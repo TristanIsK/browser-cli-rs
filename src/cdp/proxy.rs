@@ -1,7 +1,7 @@
 //! Use the same environment proxy matcher as reqwest for CDP connections.
 use std::{
-    io::{Read, Write},
-    net::{TcpStream, ToSocketAddrs},
+    io::{self, Read, Write},
+    net::TcpStream,
     time::{Duration, Instant},
 };
 
@@ -15,9 +15,13 @@ use tungstenite::{
 
 use crate::{Error, Result};
 
+mod resolver;
+
+pub(super) type Socket = WebSocket<MaybeTlsStream<ConnectionStream>>;
+
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(super) fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+pub(super) fn connect(url: &str) -> Result<Socket> {
     connect_with_matcher(url, &Matcher::from_env())
 }
 
@@ -38,15 +42,16 @@ fn destination(url: &str) -> Result<Uri> {
     Uri::from_parts(parts).map_err(|_| Error::Config("invalid CDP URL".into()))
 }
 
-fn connect_with_matcher(
-    url: &str,
-    matcher: &Matcher,
-) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+fn connect_with_matcher(url: &str, matcher: &Matcher) -> Result<Socket> {
+    connect_with_deadline(url, matcher, Deadline::new(TIMEOUT))
+}
+
+fn connect_with_deadline(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Socket> {
     let mut url = url.to_owned();
     // Match tungstenite::connect's three-hop limit, but choose the route anew
     // for every destination, including redirects to/from NO_PROXY hosts.
     for attempt in 0..=3 {
-        match connect_once(&url, matcher) {
+        match connect_once(&url, matcher, deadline) {
             Err(Error::WebSocket(error)) if attempt < 3 => {
                 if let tungstenite::Error::Http(response) = error.as_ref()
                     && response.status().is_redirection()
@@ -66,29 +71,44 @@ fn connect_with_matcher(
     unreachable!("last connection attempt always returns")
 }
 
-fn connect_once(url: &str, matcher: &Matcher) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Socket> {
     let destination = destination(url)?;
-    let Some(proxy) = matcher.intercept(&destination) else {
-        // The outer loop owns redirects so a direct hop cannot skip proxy rules.
-        return Ok(tungstenite::client::connect_with_config(url, None, 0)?.0);
-    };
-    // ponytail: implement the HTTP CONNECT proxy used by cloud runtimes. Other
-    // proxy schemes fail explicitly; never silently retry a proxy failure direct.
-    if proxy.uri().scheme_str() != Some("http") {
+    let proxy = matcher.intercept(&destination);
+    // ponytail: HTTP CONNECT only. Never silently retry a proxy failure direct.
+    if proxy
+        .as_ref()
+        .is_some_and(|p| p.uri().scheme_str() != Some("http"))
+    {
         return Err(Error::Config(
             "CDP supports only http:// CONNECT proxies".into(),
         ));
     }
-    let host = proxy
-        .uri()
+    let endpoint = proxy.as_ref().map_or(&destination, |p| p.uri());
+    let host = endpoint
         .host()
-        .ok_or_else(|| Error::Config("proxy has no host".into()))?;
-    let port = proxy.uri().port_u16().unwrap_or(80);
-    let deadline = Instant::now() + TIMEOUT;
-    let mut last_error = std::io::Error::other("proxy has no addresses");
+        .ok_or_else(|| Error::Config("missing host".into()))?;
+    let port = endpoint
+        .port_u16()
+        .unwrap_or(if endpoint.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
+    let dns_stage = if proxy.is_some() {
+        "proxy_dns"
+    } else {
+        "target_dns"
+    };
+    let addresses = resolver::resolve(host.trim_matches(['[', ']']), port, deadline, dns_stage)?;
+    let stage = if proxy.is_some() {
+        "proxy_tcp"
+    } else {
+        "target_tcp"
+    };
+    let mut last_error = io::Error::other("endpoint has no addresses");
     let mut connected = None;
-    for address in (host.trim_matches(['[', ']']), port).to_socket_addrs()? {
-        match TcpStream::connect_timeout(&address, remaining(deadline)?) {
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, deadline.remaining(stage)?) {
             Ok(stream) => {
                 connected = Some(stream);
                 break;
@@ -96,36 +116,161 @@ fn connect_once(url: &str, matcher: &Matcher) -> Result<WebSocket<MaybeTlsStream
             Err(error) => last_error = error,
         }
     }
-    let mut stream = connected.ok_or(last_error)?;
-    stream.set_write_timeout(Some(remaining(deadline)?))?;
-    establish_tunnel(&mut stream, &destination, &proxy, deadline)?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.set_write_timeout(Some(TIMEOUT))?;
-    // Keep a handle to restore normal CDP I/O after the TLS/WebSocket handshake.
-    let timeout_handle = stream.try_clone()?;
-    let (socket, _) = tungstenite::client_tls(url, stream).map_err(|error| match error {
-        HandshakeError::Failure(error) => Error::from(error),
-        HandshakeError::Interrupted(_) => {
-            Error::Cdp("proxy WebSocket handshake interrupted".into())
-        }
+    deadline.remaining(stage)?;
+    let stream = connected.ok_or_else(|| deadline.normalize(Error::Io(last_error), stage))?;
+    stream.set_nodelay(true)?;
+    let mut stream = ConnectionStream {
+        stream,
+        deadline: Some(deadline.end),
+    };
+    if let Some(proxy) = proxy {
+        establish_tunnel(&mut stream, &destination, &proxy)
+            .map_err(|error| deadline.normalize(error, "proxy_connect"))?;
+    }
+    let stage = if destination.scheme_str() == Some("https") {
+        "tls_websocket_handshake"
+    } else {
+        "websocket_handshake"
+    };
+    deadline.remaining(stage)?;
+    let (mut socket, _) = tungstenite::client_tls(url, stream).map_err(|error| {
+        deadline.normalize(
+            match error {
+                HandshakeError::Failure(error) => Error::from(error),
+                HandshakeError::Interrupted(_) => {
+                    Error::Cdp("WebSocket handshake interrupted".into())
+                }
+            },
+            stage,
+        )
     })?;
-    timeout_handle.set_read_timeout(None)?;
-    timeout_handle.set_write_timeout(None)?;
+    deadline.remaining(stage)?;
+    let stream = match socket.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => &mut stream.sock,
+        _ => return Err(Error::Config("unsupported CDP TLS backend".into())),
+    };
+    stream.stream.set_read_timeout(None)?;
+    stream.stream.set_write_timeout(None)?;
+    stream.deadline = None;
     Ok(socket)
 }
 
-fn remaining(deadline: Instant) -> Result<Duration> {
+#[derive(Clone, Copy)]
+struct Deadline {
+    end: Instant,
+    budget: Duration,
+}
+
+impl Deadline {
+    fn new(budget: Duration) -> Self {
+        Self {
+            end: Instant::now() + budget,
+            budget,
+        }
+    }
+
+    fn timeout(self, stage: &str) -> Error {
+        Error::Timeout(format!(
+            "CDP connection (stage: {stage}, budget: {:?})",
+            self.budget
+        ))
+    }
+
+    fn remaining(self, stage: &str) -> Result<Duration> {
+        remaining(self.end).map_err(|_| self.timeout(stage))
+    }
+
+    fn normalize(self, error: Error, stage: &str) -> Error {
+        let io = match &error {
+            Error::Io(error) => Some(error),
+            Error::WebSocket(error) => match error.as_ref() {
+                tungstenite::Error::Io(error) => Some(error),
+                _ => None,
+            },
+            _ => None,
+        };
+        if self.remaining(stage).is_err()
+            || io.is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                )
+            })
+        {
+            self.timeout(stage)
+        } else {
+            error
+        }
+    }
+}
+
+fn remaining(deadline: Instant) -> io::Result<Duration> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| Error::Timeout("CDP proxy connection".into()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "CDP connection deadline exceeded"))
+}
+
+// Each underlying I/O uses the remaining budget, including rustls' handshake
+// loops and peers that keep trickling bytes. Disabled after the WS upgrade.
+#[derive(Debug)]
+pub(super) struct ConnectionStream {
+    stream: TcpStream,
+    deadline: Option<Instant>,
+}
+
+impl Read for ConnectionStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            self.stream.set_read_timeout(Some(remaining(deadline)?))?;
+        }
+        let result = self.stream.read(buffer);
+        self.finish_io(result)
+    }
+}
+
+impl Write for ConnectionStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            self.stream.set_write_timeout(Some(remaining(deadline)?))?;
+        }
+        let result = self.stream.write(buffer);
+        self.finish_io(result)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // TcpStream is unbuffered.
+        let result = self.stream.flush();
+        self.finish_io(result)
+    }
+}
+
+impl ConnectionStream {
+    fn finish_io<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if let Some(deadline) = self.deadline {
+            remaining(deadline)?;
+            // Blocking sockets can report WouldBlock on Unix when SO_*TIMEO
+            // expires. Do not let tungstenite interpret it as resumable I/O.
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.kind() == io::ErrorKind::WouldBlock)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "CDP connection I/O timed out",
+                ));
+            }
+        }
+        result
+    }
 }
 
 fn establish_tunnel(
-    stream: &mut TcpStream,
+    stream: &mut ConnectionStream,
     destination: &Uri,
     proxy: &Intercept,
-    deadline: Instant,
 ) -> Result<()> {
     let host = destination
         .host()
@@ -157,7 +302,6 @@ fn establish_tunnel(
                 "proxy CONNECT response headers too large".into(),
             ));
         }
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
         let mut byte = [0];
         stream.read_exact(&mut byte)?;
         bytes.push(byte[0]);
@@ -219,6 +363,150 @@ mod tests {
                 Err(error) => panic!("accept failed: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn stalled_tls_and_websocket_handshakes_time_out_on_both_routes() {
+        for proxied in [false, true] {
+            for secure in [false, true] {
+                let endpoint = listener();
+                let address = endpoint.local_addr().unwrap();
+                let matcher = if proxied {
+                    Matcher::builder().all(format!("http://{address}")).build()
+                } else {
+                    Matcher::builder().build()
+                };
+                let scheme = if secure { "wss" } else { "ws" };
+                let url = format!("{scheme}://{address}/?token=private-secret");
+                let server = thread::spawn(move || {
+                    let mut stream = accept_with_timeout(&endpoint);
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    if proxied {
+                        read_headers(&mut stream);
+                        stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                    }
+                    // Consume the client handshake but never reply. Client must
+                    // close the socket on timeout rather than leaving work alive.
+                    let mut bytes = Vec::new();
+                    stream.read_to_end(&mut bytes).unwrap();
+                    assert!(!bytes.is_empty());
+                });
+                let start = Instant::now();
+                let error = connect_with_deadline(
+                    &url,
+                    &matcher,
+                    Deadline::new(if secure {
+                        Duration::from_secs(2)
+                    } else {
+                        Duration::from_millis(500)
+                    }),
+                )
+                .unwrap_err();
+                assert!(matches!(error, Error::Timeout(ref text) if text.contains("handshake")));
+                assert!(!error.to_string().contains("private-secret"));
+                assert!(start.elapsed() < Duration::from_secs(4));
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn trickling_connect_and_websocket_headers_do_not_reset_the_budget() {
+        for tunnel in [true, false] {
+            let endpoint = listener();
+            let address = endpoint.local_addr().unwrap();
+            let matcher = Matcher::builder().all(format!("http://{address}")).build();
+            let server = thread::spawn(move || {
+                let mut stream = accept_with_timeout(&endpoint);
+                read_headers(&mut stream);
+                if !tunnel {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                    read_headers(&mut stream);
+                }
+                for byte in b"HTTP/1.1 200 OK\r\nX-Slow: padding padding padding\r\n\r\n" {
+                    if stream.write_all(&[*byte]).is_err() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(40));
+                }
+                panic!("client allowed slow headers past deadline");
+            });
+            let start = Instant::now();
+            let error = connect_with_deadline(
+                "ws://unresolved.invalid/",
+                &matcher,
+                Deadline::new(Duration::from_millis(200)),
+            )
+            .unwrap_err();
+            let expected = if tunnel {
+                "proxy_connect"
+            } else {
+                "websocket_handshake"
+            };
+            assert!(matches!(error, Error::Timeout(ref message) if message.contains(expected)));
+            assert!(start.elapsed() < Duration::from_secs(1));
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn redirects_share_the_original_deadline_and_success_clears_it() {
+        let endpoint = listener();
+        let address = endpoint.local_addr().unwrap();
+        let url = format!("ws://{address}/");
+        let location = url.clone();
+        let server = thread::spawn(move || {
+            let mut stream = accept_with_timeout(&endpoint);
+            read_headers(&mut stream);
+            thread::sleep(Duration::from_millis(350));
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+            )
+            .unwrap();
+            let mut stream = accept_with_timeout(&endpoint);
+            read_headers(&mut stream);
+            let mut rest = Vec::new();
+            stream.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty());
+        });
+        let start = Instant::now();
+        assert!(matches!(
+            connect_with_deadline(
+                &url,
+                &Matcher::builder().build(),
+                Deadline::new(Duration::from_millis(500))
+            ),
+            Err(Error::Timeout(_))
+        ));
+        assert!(
+            start.elapsed() < Duration::from_millis(800),
+            "redirect reset the budget"
+        );
+        server.join().unwrap();
+
+        let endpoint = listener();
+        let url = format!("ws://{}/", endpoint.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut socket = tungstenite::accept(accept_with_timeout(&endpoint)).unwrap();
+            thread::sleep(Duration::from_millis(600));
+            socket
+                .send(Message::text("after connection deadline"))
+                .unwrap();
+        });
+        let mut socket = connect_with_deadline(
+            &url,
+            &Matcher::builder().build(),
+            Deadline::new(Duration::from_millis(500)),
+        )
+        .unwrap();
+        assert_eq!(
+            socket.read().unwrap().into_text().unwrap(),
+            "after connection deadline"
+        );
+        server.join().unwrap();
     }
 
     #[test]
