@@ -2,6 +2,10 @@
 use std::{
     io::{self, Read, Write},
     net::TcpStream,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -119,9 +123,14 @@ fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Sock
     deadline.remaining(stage)?;
     let stream = connected.ok_or_else(|| deadline.normalize(Error::Io(last_error), stage))?;
     stream.set_nodelay(true)?;
+    // Retain controls outside the TLS wrapper: downstream feature unification
+    // can select native-tls instead of rustls.
+    let timeout_handle = stream.try_clone()?;
+    let connected = Arc::new(AtomicBool::new(false));
     let mut stream = ConnectionStream {
         stream,
-        deadline: Some(deadline.end),
+        deadline: deadline.end,
+        connected: connected.clone(),
     };
     if let Some(proxy) = proxy {
         establish_tunnel(&mut stream, &destination, &proxy)
@@ -133,7 +142,7 @@ fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Sock
         "websocket_handshake"
     };
     deadline.remaining(stage)?;
-    let (mut socket, _) = tungstenite::client_tls(url, stream).map_err(|error| {
+    let (socket, _) = tungstenite::client_tls(url, stream).map_err(|error| {
         deadline.normalize(
             match error {
                 HandshakeError::Failure(error) => Error::from(error),
@@ -145,14 +154,9 @@ fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Sock
         )
     })?;
     deadline.remaining(stage)?;
-    let stream = match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => stream,
-        MaybeTlsStream::Rustls(stream) => &mut stream.sock,
-        _ => return Err(Error::Config("unsupported CDP TLS backend".into())),
-    };
-    stream.stream.set_read_timeout(None)?;
-    stream.stream.set_write_timeout(None)?;
-    stream.deadline = None;
+    timeout_handle.set_read_timeout(None)?;
+    timeout_handle.set_write_timeout(None)?;
+    connected.store(true, Ordering::Relaxed);
     Ok(socket)
 }
 
@@ -212,17 +216,18 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "CDP connection deadline exceeded"))
 }
 
-// Each underlying I/O uses the remaining budget, including rustls' handshake
+// Each underlying I/O uses the remaining budget, including TLS handshake
 // loops and peers that keep trickling bytes. Disabled after the WS upgrade.
 #[derive(Debug)]
 pub(super) struct ConnectionStream {
     stream: TcpStream,
-    deadline: Option<Instant>,
+    deadline: Instant,
+    connected: Arc<AtomicBool>,
 }
 
 impl Read for ConnectionStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if let Some(deadline) = self.deadline {
+        if let Some(deadline) = self.active_deadline() {
             self.stream.set_read_timeout(Some(remaining(deadline)?))?;
         }
         let result = self.stream.read(buffer);
@@ -232,7 +237,7 @@ impl Read for ConnectionStream {
 
 impl Write for ConnectionStream {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if let Some(deadline) = self.deadline {
+        if let Some(deadline) = self.active_deadline() {
             self.stream.set_write_timeout(Some(remaining(deadline)?))?;
         }
         let result = self.stream.write(buffer);
@@ -247,8 +252,13 @@ impl Write for ConnectionStream {
 }
 
 impl ConnectionStream {
+    fn active_deadline(&self) -> Option<Instant> {
+        // The flag changes only before the connected socket is returned.
+        (!self.connected.load(Ordering::Relaxed)).then_some(self.deadline)
+    }
+
     fn finish_io<T>(&self, result: io::Result<T>) -> io::Result<T> {
-        if let Some(deadline) = self.deadline {
+        if let Some(deadline) = self.active_deadline() {
             remaining(deadline)?;
             // Blocking sockets can report WouldBlock on Unix when SO_*TIMEO
             // expires. Do not let tungstenite interpret it as resumable I/O.
