@@ -8,7 +8,20 @@ permissions:
   contents: write
 
 jobs:
+  validate-version:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate tag, Cargo and Skill versions before releasing
+        shell: powershell
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: .\.github\scripts\verify-release-version.ps1 -ReleaseTag $env:RELEASE_TAG
+
   build-macos:
+    needs: validate-version
     runs-on: macos-14
     environment: macos-release
     steps:
@@ -18,6 +31,12 @@ jobs:
           targets: aarch64-apple-darwin
       - run: cargo test --locked
       - run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Verify compiled version before signing
+        shell: bash
+        run: |
+          actual="$(target/aarch64-apple-darwin/release/browser-cli --version)"
+          expected="browser-cli ${GITHUB_REF_NAME#v}"
+          [ "$actual" = "$expected" ] || { echo "Version mismatch: expected $expected, got $actual" >&2; exit 1; }
       - name: Sign and notarize
         env:
           MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
@@ -38,6 +57,7 @@ jobs:
           path: browser-cli-v*-aarch64-apple-darwin*
 
   build-linux:
+    needs: validate-version
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -48,6 +68,12 @@ jobs:
       - run: cargo test --locked
       - name: Build static Linux binary
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Verify compiled version before packaging
+        shell: bash
+        run: |
+          actual="$(target/x86_64-unknown-linux-musl/release/browser-cli --version)"
+          expected="browser-cli ${GITHUB_REF_NAME#v}"
+          [ "$actual" = "$expected" ] || { echo "Version mismatch: expected $expected, got $actual" >&2; exit 1; }
       - name: Package
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -66,6 +92,7 @@ jobs:
           path: browser-cli-v*-x86_64-unknown-linux-musl*
 
   build-windows:
+    needs: validate-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -74,6 +101,12 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - run: cargo test --locked
       - run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Verify compiled version before packaging
+        shell: bash
+        run: |
+          actual="$(target/x86_64-pc-windows-msvc/release/browser-cli.exe --version)"
+          expected="browser-cli ${GITHUB_REF_NAME#v}"
+          [ "$actual" = "$expected" ] || { echo "Version mismatch: expected $expected, got $actual" >&2; exit 1; }
       - name: Package
         shell: bash
         run: |

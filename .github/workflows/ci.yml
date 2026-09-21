@@ -38,11 +38,6 @@ jobs:
           ! grep -q 'skills/lexmount-browser/bin/' .github/workflows/release.yml
       - run: bash -n scripts/sign_and_notarize_macos.sh scripts/upload-release-to-cos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
-      - name: Verify Skill bootstrap version
-        run: |
-          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          grep -Fq "else { \"${package_version}\" }" skills/lexmount-browser/scripts/bootstrap.ps1
-          grep -Fq "LEXMOUNT_BROWSER_CLI_VERSION:-${package_version}" skills/lexmount-browser/scripts/bootstrap.sh
       - name: Verify Skill platform selection and PATH isolation
         run: |
           test_dir="$(mktemp -d)"
@@ -81,6 +76,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Test release version consistency gate
+        shell: powershell
+        run: .\.github\scripts\test-release-version.ps1
       - name: Test published bootstrap version selection
         shell: powershell
         run: .\.github\scripts\test-select-bootstrap-version.ps1

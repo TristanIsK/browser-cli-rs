@@ -86,8 +86,8 @@ automatic action retries. These changes require a new CLI release; published
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.2.1 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.2.1 only after its binaries and checksums are published
+1.2.3 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.2.3 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
@@ -162,6 +162,26 @@ matching bundled bootstrap script, then verify `browser-cli version` and
 dependency rather than substituting an older binary for a task needing the new
 feature. Release tags must match the Cargo and bootstrap versions; never
 overwrite an existing release with changed binaries.
+
+### Release checklist
+
+1. In a reviewed PR, update the package version in `Cargo.toml`, the
+   `lexmount-browser` entry in `Cargo.lock`, and the defaults in both
+   `skills/lexmount-browser/scripts/bootstrap.ps1` and `bootstrap.sh`.
+2. Run `.github/scripts/test-release-version.ps1` with Windows PowerShell 5.1
+   or PowerShell 7, then `.github/scripts/verify-release-version.ps1 -ReleaseTag
+   v1.2.3` (substitute the intended version). Complete CI and merge the PR.
+3. Create the matching tag **on that merged commit**. Typing a new tag or
+   release title in GitHub does not update any source version. The release
+   workflow rejects inconsistent versions before building, signing or uploading.
+4. Wait for every build and the publish job. Each platform's compiled binary
+   must report the tag's version before packaging. Verify the downloaded asset's
+   checksum and `browser-cli version`; the Skill ZIP must pin the same version.
+
+The published `v1.2.2` assets include the error-reporting fixes, but were built
+with Cargo version `1.2.1` and Skill bootstrap defaults `1.2.1`. They are
+misversioned; use the corrected `v1.2.3` release once published. Do not retag or
+overwrite `v1.2.2`: consumers may already have its original files and checksums.
 
 Agents resolve bundled scripts and binaries from the directory containing the
 loaded `SKILL.md`: Codex uses the absolute source path supplied in the Skill

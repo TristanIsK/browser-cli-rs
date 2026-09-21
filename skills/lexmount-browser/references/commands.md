@@ -49,7 +49,7 @@ Introduced in 1.2.0; requires a binary whose `browser-cli action --help` lists
 Check the actual Skill-local binary, not just the version of these instructions.
 
 For an authorized upgrade, rerun the matching Skill-local bootstrap script only
-after its pinned 1.2.0 release assets are available, then verify `version` and
+after its pinned release assets are available, then verify `version` and
 `action --help`. A merged PR or a newer Skill file does not publish or replace
 the binary. If the release is unavailable or the upgrade is not authorized,
 report the dependency or capability limitation; do not send unsupported flags
