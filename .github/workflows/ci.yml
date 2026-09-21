@@ -49,10 +49,14 @@ jobs:
           output="$(PATH="$test_dir/fake-path:/usr/bin:/bin" "$test_dir/skill/scripts/doctor.sh")"
           status=$?
           set -e
-          test "$status" -eq 2
-          test "$output" = '{"ok":false,"error":"unsupported_platform","message":"This Skill supports macOS arm64 through scripts/doctor.sh and Windows x64 through scripts/doctor.ps1."}'
+          test "$status" -eq 1
+          test "$output" = '{"ok":false,"error":"command_not_found","message":"Skill-local browser-cli is missing. Run scripts/bootstrap.sh first."}'
           ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
           ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
+      - name: Test pinned bootstrap security
+        run: ./tests/test_skill_bootstrap_security.py
+      - name: Verify pinned Linux bootstrap
+        run: sh skills/lexmount-browser/scripts/bootstrap.sh
       - name: Verify runtime packaging contract
         run: |
           ! grep -R -E 'python3[[:space:]]|python[[:space:]]+-m|uv[[:space:]]' scripts skills .github/workflows
@@ -86,12 +90,9 @@ jobs:
         shell: powershell
         run: |
           if ($PSVersionTable.PSVersion.Major -ne 5) { throw "Expected Windows PowerShell 5.1" }
-          # Tags can precede uploads or refer to releases with missing assets.
-          $env:LEXMOUNT_BROWSER_CLI_VERSION = & .\.github\scripts\select-bootstrap-version.ps1
-          Write-Host "Testing published browser-cli $env:LEXMOUNT_BROWSER_CLI_VERSION"
-          $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "browser-cli-bootstrap"
+          & .\tests\test_skill_bootstrap_security.ps1
           & .\skills\lexmount-browser\scripts\bootstrap.ps1
-          & (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR "browser-cli.exe") version
+          & .\skills\lexmount-browser\bin\browser-cli.exe version
           if ($LASTEXITCODE -ne 0) { throw "Installed browser-cli version check failed" }
 
   linux-release:

@@ -4,6 +4,17 @@ Every command returns a JSON object with `ok` and either `data` or `error`.
 The examples use `browser-cli` as shorthand for the Skill-local binary resolved
 from the directory containing `SKILL.md`; invoke that binary by its absolute path.
 
+## Destructive operations
+
+Before `session downloads delete`, explain that stored cloud download files will be
+removed; before `context delete`, explain that saved cookies and website login state
+will be lost. Export anything needed first. Obtain explicit user approval naming the
+session/Context and operation; `--yes` only skips a CLI prompt, it does not grant consent.
+`context force-release` can discard unsaved state or disrupt an active session: first
+verify the owning session has ended, then explain the impact and obtain approval.
+Never use these commands as automatic cleanup. Close only temporary sessions created
+for the task; preserve a session during user login or other manual takeover.
+
 ```text
 browser-cli doctor
 browser-cli auth status

@@ -151,9 +151,10 @@ The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP
 The ZIP contains `SKILL.md`, references, and platform bootstrap scripts at its
 archive root. Native executables are published separately and are not placed in
 the Skill ZIP. On first use, the matching bootstrap script downloads the pinned
-release from Tencent Cloud COS and verifies its SHA-256 digest. Set
-`LEXMOUNT_BROWSER_CLI_VERSION` or `LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL` only
-when testing a different published release or mirror.
+release from Tencent Cloud COS and verifies the SHA-256 digest pinned in the
+bundled installer. Version, mirror and installation-path environment overrides are
+rejected. First installation requires approval to download and execute native code;
+see the Skill security reference for exact artifacts and required permissions.
 
 Updating the Skill files does not replace an existing Skill-local executable.
 After the pinned release is available, an authorized upgrade can rerun the
