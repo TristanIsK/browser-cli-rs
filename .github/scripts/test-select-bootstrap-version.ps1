@@ -175,7 +175,7 @@ try {
       Assert-Equal $requests.Count 2
     }
   }
-  Test-Case 'real bootstrap rejects a hash mismatch without installing or downgrading' {
+  Test-Case 'real bootstrap rejects legacy release overrides without installing' {
     Set-Published '1.1.15'
     Set-Published '1.1.13'
     $rules['GET /v1.1.15/browser-cli-v1.1.15-x86_64-pc-windows-msvc.exe'] = @{ Status = 200; Body = 'corrupt binary' }
@@ -190,9 +190,9 @@ try {
       $env:TEMP = $fixtureRoot
       $env:TMP = $fixtureRoot
       $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-      Assert-Throws { & (Join-Path $repositoryRoot 'skills/lexmount-browser/scripts/bootstrap.ps1') } 'SHA-256 mismatch'
+      Assert-Throws { & (Join-Path $repositoryRoot 'skills/lexmount-browser/scripts/bootstrap.ps1') } 'overrides are disabled'
       Assert-Equal (Test-Path -LiteralPath (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR 'browser-cli.exe')) $false
-      Assert-Equal @($requests | Where-Object { $_ -match '/v1.1.13/' }).Count 0
+      Assert-Equal @($requests | Where-Object { $_ -match '^GET .*browser-cli-.*exe' }).Count 0
     } finally {
       foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     }
