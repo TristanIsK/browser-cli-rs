@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 $root = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
-$script:networkCalled = $false
+$network = @{ Called = $false }
 function Invoke-WebRequest {
   param($Uri, $OutFile, [switch]$UseBasicParsing)
-  $script:networkCalled = $true
+  $network.Called = $true
   [IO.File]::WriteAllText($OutFile, 'untrusted executable payload')
 }
 try {
@@ -19,7 +19,7 @@ try {
         if ($_.Exception.Message -notmatch 'overrides are disabled') { throw }
         $failed = $true
       }
-      if (-not $failed -or $script:networkCalled) { throw 'Override reached network/install' }
+      if (-not $failed -or $network.Called) { throw 'Override reached network/install' }
     } finally { [Environment]::SetEnvironmentVariable($key, $old) }
   }
   $failed = $false
@@ -27,7 +27,7 @@ try {
     if ($_.Exception.Message -notmatch 'SHA-256 mismatch') { throw }
     $failed = $true
   }
-  if (-not $failed -or -not $script:networkCalled) { throw 'Invalid payload was not rejected' }
+  if (-not $failed -or -not $network.Called) { throw 'Invalid payload was not rejected' }
   if ([IO.File]::ReadAllText("$root/bin/browser-cli.exe") -cne 'previous binary') { throw 'Previous install changed' }
   Write-Output 'PowerShell override and checksum failure checks passed'
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }
