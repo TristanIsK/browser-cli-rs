@@ -7,7 +7,7 @@ use std::{
 };
 
 // Run the real binary against a loopback fixture, never the user's credentials.
-pub fn cli(api: &str, directory: &Path, arguments: &[&str]) -> Output {
+pub fn command(api: &str, directory: &Path, arguments: &[&str]) -> Command {
     assert!(api.starts_with("http://127.0.0.1:"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_browser-cli"));
     command
@@ -25,7 +25,16 @@ pub fn cli(api: &str, directory: &Path, arguments: &[&str]) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     clear_proxy_env(&mut command);
-    run(command, Duration::from_secs(20))
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
+pub fn cli(api: &str, directory: &Path, arguments: &[&str]) -> Output {
+    run(command(api, directory, arguments), Duration::from_secs(20))
 }
 
 fn clear_proxy_env(command: &mut Command) {

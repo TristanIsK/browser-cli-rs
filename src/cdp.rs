@@ -153,13 +153,7 @@ impl Cdp {
             json!({"expression": expression, "awaitPromise": true, "returnByValue": true}),
         )?;
         if let Some(exception) = result.get("exceptionDetails") {
-            return Err(Error::Cdp(
-                exception
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("JavaScript evaluation failed")
-                    .into(),
-            ));
+            return Err(Error::Cdp(javascript_exception_message(exception)));
         }
         Ok(result
             .get("result")
@@ -290,6 +284,43 @@ impl Cdp {
     }
 }
 
+fn javascript_exception_message(details: &Value) -> String {
+    // Keep the error's first line, not the stack, source URL, expression or
+    // remote object's preview. The message itself is page-provided text.
+    fn summary(value: &Value) -> Option<String> {
+        let line = value.as_str()?.lines().next()?.trim();
+        if line.is_empty() {
+            return None;
+        }
+        Some(match line.char_indices().nth(1024) {
+            Some((end, _)) => format!("{}…", &line[..end]),
+            None => line.to_owned(),
+        })
+    }
+
+    let exception = &details["exception"];
+    let mut message = summary(&exception["description"])
+        .or_else(|| match exception.get("value")? {
+            value @ Value::String(_) => summary(value),
+            value @ (Value::Null | Value::Bool(_) | Value::Number(_)) => Some(value.to_string()),
+            _ => None,
+        })
+        .or_else(|| summary(&exception["unserializableValue"]))
+        .or_else(|| summary(&details["text"]))
+        .or_else(|| summary(&exception["className"]))
+        .unwrap_or_else(|| "JavaScript evaluation failed".into());
+
+    // CDP locations are zero-based; display one-based positions to users.
+    let position = |key: &str| details[key].as_u64().and_then(|n| n.checked_add(1));
+    match (position("lineNumber"), position("columnNumber")) {
+        (Some(line), Some(column)) => message.push_str(&format!(" (line {line}, column {column})")),
+        (Some(line), None) => message.push_str(&format!(" (line {line})")),
+        (None, Some(column)) => message.push_str(&format!(" (column {column})")),
+        (None, None) => {}
+    }
+    message
+}
+
 fn select_page_target(targets: &Value, requested: Option<&str>) -> Result<Option<String>> {
     let pages = targets.get("targetInfos").and_then(Value::as_array);
     if let Some(id) = requested {
@@ -332,9 +363,104 @@ fn text_matches(candidate: &str, query: &str, exact: bool, case_sensitive: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::{select_page_target, text_matches};
+    use super::{javascript_exception_message, select_page_target, text_matches};
     use crate::Error;
     use serde_json::json;
+
+    #[test]
+    fn exception_summary_prefers_description_and_omits_stack_and_remote_details() {
+        let details = json!({
+            "text":"Uncaught", "lineNumber":0, "columnNumber":4,
+            "url":"private-source-url", "scriptId":"private-script-id",
+            "exception":{
+                "description":"TypeError: missing element\n    at private-stack-url:1:5",
+                "objectId":"private-object-id", "preview":{"properties":[{"value":"private-property"}]}
+            },
+            "stackTrace":{"callFrames":[{"url":"private-frame-url"}]}
+        });
+        assert_eq!(
+            javascript_exception_message(&details),
+            "TypeError: missing element (line 1, column 5)"
+        );
+    }
+
+    #[test]
+    fn exception_summary_handles_primitive_throws_and_incomplete_details() {
+        for (details, expected) in [
+            (
+                json!({"text":"Uncaught","exception":{"value":"not ready\nsecond line"}}),
+                "not ready",
+            ),
+            (json!({"text":"Uncaught","exception":{"value":42}}), "42"),
+            (
+                json!({"text":"Uncaught","exception":{"value":false}}),
+                "false",
+            ),
+            (
+                json!({"text":"Uncaught","exception":{"value":null}}),
+                "null",
+            ),
+            (
+                json!({"text":"Uncaught","exception":{"unserializableValue":"99n"}}),
+                "99n",
+            ),
+            (
+                json!({"text":"Script execution interrupted"}),
+                "Script execution interrupted",
+            ),
+            (
+                json!({"text":"Uncaught","exception":{"value":{"private":"do not include"}}}),
+                "Uncaught",
+            ),
+            (
+                json!({"text":" ","exception":{"description":"\nprivate-frame", "className":"Error"}}),
+                "Error",
+            ),
+            (json!({}), "JavaScript evaluation failed"),
+            (json!(null), "JavaScript evaluation failed"),
+        ] {
+            assert_eq!(javascript_exception_message(&details), expected);
+        }
+    }
+
+    #[test]
+    fn exception_locations_are_optional_and_safe_for_invalid_numbers() {
+        for (details, expected) in [
+            (
+                json!({"text":"Uncaught","lineNumber":0}),
+                "Uncaught (line 1)",
+            ),
+            (
+                json!({"text":"Uncaught","columnNumber":0}),
+                "Uncaught (column 1)",
+            ),
+            (
+                json!({"text":"Uncaught","lineNumber":-1,"columnNumber":null}),
+                "Uncaught",
+            ),
+            (
+                json!({"text":"Uncaught","lineNumber":u64::MAX,"columnNumber":"5"}),
+                "Uncaught",
+            ),
+        ] {
+            assert_eq!(javascript_exception_message(&details), expected);
+        }
+    }
+
+    #[test]
+    fn exception_summary_is_bounded_without_splitting_unicode() {
+        for field in ["description", "value", "unserializableValue"] {
+            let details = json!({"text":"Uncaught","exception":{field:"错🦀".repeat(600)}});
+            let message = javascript_exception_message(&details);
+            assert_eq!(message, format!("{}…", "错🦀".repeat(512)));
+        }
+        let text = "x".repeat(1024);
+        assert_eq!(javascript_exception_message(&json!({"text":text})), text);
+        assert_eq!(
+            javascript_exception_message(&json!({"text":"x".repeat(1025)})),
+            format!("{text}…")
+        );
+    }
 
     #[test]
     fn explicit_page_selection_does_not_depend_on_order() {

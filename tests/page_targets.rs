@@ -20,6 +20,10 @@ struct Peer {
 
 impl Peer {
     fn start(targets: Value, fail_attach: bool) -> Self {
+        Self::with_exception(targets, fail_attach, None)
+    }
+
+    fn with_exception(targets: Value, fail_attach: bool, exception: Option<Value>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -106,6 +110,21 @@ impl Peer {
                                 json!({"data":"YXJ0aWZhY3Q="})
                             }
                             "Runtime.evaluate" => {
+                                if let Some(details) = &exception {
+                                    socket
+                                        .send(Message::Text(
+                                            json!({
+                                                "id":request["id"], "result":{
+                                                    "result":{"type":"object","subtype":"error"},
+                                                    "exceptionDetails":details
+                                                }
+                                            })
+                                            .to_string()
+                                            .into(),
+                                        ))
+                                        .unwrap();
+                                    continue;
+                                }
                                 let expression = request["params"]["expression"].as_str().unwrap();
                                 let value = match expression {
                                     "document.readyState" => json!("complete"),
@@ -163,6 +182,81 @@ fn two_pages() -> Value {
         {"targetId":"wanted","type":"page"},
         {"targetId":"worker","type":"service_worker"}
     ])
+}
+
+#[test]
+fn evaluation_exception_details_reach_cli_without_changing_failure_contract() {
+    let directory = tempfile::tempdir().unwrap();
+    for args in [
+        vec![
+            "eval",
+            "--expression",
+            "document.querySelector('#missing').click()",
+        ],
+        vec!["click", "--selector", "#missing"],
+        vec!["fill", "--selector", "#missing", "--value", "hello"],
+    ] {
+        let peer = Peer::with_exception(
+            two_pages(),
+            false,
+            Some(json!({
+                "text":"Uncaught", "lineNumber":2, "columnNumber":4,
+                "url":"https://example.test/?token=private-source-url",
+                "exception":{
+                    "className":"TypeError", "objectId":"private-object-id",
+                    "description":"TypeError: Cannot read properties of null (reading 'click')\n    at https://example.test/?token=private-stack-url:3:5"
+                },
+                "stackTrace":{"callFrames":[{"url":"private-stack-frame"}]}
+            })),
+        );
+        let server = api(&peer.url);
+        let mut arguments = vec!["action"];
+        arguments.extend(args);
+        arguments.extend(["--session-id", "browser", "--target-id", "wanted"]);
+        let output = support::cli(&server.base_url(), directory.path(), &arguments);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(
+            error,
+            json!({"ok":false,"error":"cdp_error",
+            "message":"CDP command failed: TypeError: Cannot read properties of null (reading 'click') (line 3, column 5)"})
+        );
+        let seen = peer.finish();
+        assert_eq!(
+            seen.iter()
+                .filter(|r| r["method"] == "Runtime.evaluate")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn sdk_evaluation_preserves_syntax_errors() {
+    if support::isolated_test(
+        "sdk_evaluation_preserves_syntax_errors",
+        Duration::from_secs(20),
+    ) {
+        return;
+    }
+    let peer = Peer::with_exception(
+        two_pages(),
+        false,
+        Some(json!({
+            "text":"Uncaught", "lineNumber":0, "columnNumber":20,
+            "exception":{"className":"SyntaxError", "description":"SyntaxError: Invalid regular expression: missing /"}
+        })),
+    );
+    let error = {
+        let mut cdp = Cdp::connect_to_target(&peer.url, "wanted").unwrap();
+        cdp.evaluate("invalid syntax").unwrap_err()
+    };
+    assert_eq!(
+        error.to_string(),
+        "CDP command failed: SyntaxError: Invalid regular expression: missing / (line 1, column 21)"
+    );
+    peer.finish();
 }
 
 #[test]

@@ -123,6 +123,95 @@ fn pages(cdp: &mut Cdp) -> Vec<Value> {
 
 #[test]
 #[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
+fn javascript_errors_are_actionable_with_a_real_browser() {
+    if support::isolated_test(
+        "javascript_errors_are_actionable_with_a_real_browser",
+        Duration::from_secs(120),
+    ) {
+        return;
+    }
+    let chromium = std::env::var_os("BROWSER_CLI_TEST_CHROME")
+        .expect("set BROWSER_CLI_TEST_CHROME to a local Chrome/Chromium executable");
+    let browser = Browser::start(Path::new(&chromium));
+    let directory = tempfile::tempdir().unwrap();
+    let api = MockServer::start();
+    api.mock(|when, then| {
+        when.method(POST).path("/instance/session");
+        then.status(200)
+            .json_body(json!({"session_id":"browser","status":"active","ws":browser.websocket}));
+    });
+    for (args, expected) in [
+        (
+            vec!["click", "--selector", "#missing"],
+            "Error: selector not found",
+        ),
+        (
+            vec!["fill", "--selector", "#missing", "--value", "test"],
+            "Error: selector not found",
+        ),
+        (
+            vec![
+                "eval",
+                "--expression",
+                "document.querySelector('#missing').click()",
+            ],
+            "TypeError:",
+        ),
+        (vec!["eval", "--expression", "/[/"], "SyntaxError:"),
+        (
+            vec!["eval", "--expression", "throw 'not ready'"],
+            "not ready",
+        ),
+        (
+            vec![
+                "eval",
+                "--expression",
+                "Promise.reject(new Error('not ready'))",
+            ],
+            "Error: not ready",
+        ),
+    ] {
+        let mut arguments = vec!["action"];
+        arguments.extend(args);
+        arguments.extend(["--session-id", "browser"]);
+        let output = support::cli(&api.base_url(), directory.path(), &arguments);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["ok"], false);
+        assert_eq!(error["error"], "cdp_error");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(expected), "{message}");
+        assert!(message.contains("(line "), "{message}");
+        assert!(!message.contains('\n'), "stack should not be appended");
+        assert_eq!(
+            support::data(support::cli(
+                &api.base_url(),
+                directory.path(),
+                &[
+                    "action",
+                    "eval",
+                    "--session-id",
+                    "browser",
+                    "--expression",
+                    "1+1"
+                ]
+            )),
+            2
+        );
+    }
+    let mut observer = Cdp::connect(&browser.websocket).unwrap();
+    let version = observer
+        .command_root("Browser.getVersion", json!({}))
+        .unwrap();
+    println!(
+        "{}",
+        json!({"browser":version["product"], "error_cases":6, "success_after_each_error":true})
+    );
+}
+
+#[test]
+#[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
 fn search_popup_can_be_selected_across_cli_invocations_and_closed_safely() {
     if support::isolated_test(
         "search_popup_can_be_selected_across_cli_invocations_and_closed_safely",

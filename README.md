@@ -22,6 +22,30 @@ are never printed.
 All commands emit one JSON document. Run `browser-cli --help` for the complete
 surface.
 
+### Errors and output pipes
+
+Successful commands write `{"ok":true,"data":...}` to stdout. Runtime failures
+write `{"ok":false,"error":"...","message":"..."}` to stderr and exit with
+status 1. JavaScript evaluation failures keep the `cdp_error` category, but now
+include the browser's error summary and, when provided, one-based line/column
+positions. For example, a missing selector reports `Error: selector not found`
+instead of only `Uncaught`. This also applies to actions implemented with
+evaluation, such as `click` and `fill`; it does not retry or fix the action.
+
+The summary is the first line of the exception description (up to 1024 Unicode
+characters plus a truncation marker), falling back to a primitive thrown value
+or CDP's error text when needed. The CLI does not append the stack trace,
+source URL, evaluated expression or remote object preview. Exception messages
+are page-provided text and may themselves contain sensitive data; inspect them
+before sharing logs.
+
+If a stdout consumer closes its pipe early (for example, `... | head`), an
+otherwise successful command exits normally without a BrokenPipe panic.
+Other output write/flush errors still exit with status 1. An operation that
+failed still exits with status 1 even if stderr is closed and cannot report the
+error. These source changes require a new binary; updating Skill instructions
+does not change an already installed CLI.
+
 ## Cloud runtime proxies
 
 Version 1.2.1 routes CDP WebSocket connections through the environment's HTTP

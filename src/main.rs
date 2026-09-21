@@ -1,4 +1,9 @@
-use std::{path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+    time::Duration,
+};
 
 use clap::{Args, Parser, Subcommand};
 use lexmount_browser::{
@@ -6,7 +11,6 @@ use lexmount_browser::{
     cdp::{Cdp, WaitTextOptions},
     models::CreateSession,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -282,22 +286,40 @@ enum ActionCommand {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
-        Ok(value) => {
-            print_json(&json!({"ok": true, "data": value}));
-            ExitCode::SUCCESS
-        }
+    let result = run(Cli::parse());
+    write_result(result, &mut io::stdout().lock(), &mut io::stderr().lock())
+}
+
+fn write_result(
+    result: Result<Value>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> ExitCode {
+    match result {
+        Ok(value) => match print_json(stdout, &json!({"ok": true, "data": value})) {
+            Ok(()) => ExitCode::SUCCESS,
+            // A consumer such as `head` may intentionally stop reading. This
+            // exception applies only after the requested operation succeeded.
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+            Err(error) => {
+                print_error(stderr, &Error::Io(error));
+                ExitCode::FAILURE
+            }
+        },
         Err(error) => {
-            eprintln!(
-                "{}",
-                serde_json::to_string(
-                    &json!({"ok": false, "error": error_kind(&error), "message": error.to_string()})
-                )
-                .unwrap()
-            );
+            print_error(stderr, &error);
             ExitCode::FAILURE
         }
     }
+}
+
+fn print_error(stderr: &mut impl Write, error: &Error) {
+    // Reporting must not panic or replace the original failure exit status if
+    // stderr is also closed or unavailable.
+    let _ = print_json(
+        stderr,
+        &json!({"ok": false, "error": error_kind(error), "message": error.to_string()}),
+    );
 }
 
 fn run(cli: Cli) -> Result<Value> {
@@ -576,13 +598,123 @@ fn error_kind(error: &Error) -> &'static str {
         Error::Cdp(_) => "cdp_error",
     }
 }
-fn print_json<T: Serialize>(value: &T) {
-    println!("{}", serde_json::to_string(value).unwrap());
+fn print_json(writer: &mut impl Write, value: &Value) -> io::Result<()> {
+    writeln!(writer, "{value}")?;
+    writer.flush()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailingWriter {
+        kind: io::ErrorKind,
+        on_flush: bool,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.on_flush {
+                Ok(bytes.len())
+            } else {
+                Err(io::Error::new(self.kind, "fixture output failure"))
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(self.kind, "fixture output failure"))
+        }
+    }
+
+    #[test]
+    fn successful_result_allows_broken_pipe_on_write_or_flush() {
+        for on_flush in [false, true] {
+            let mut stdout = FailingWriter {
+                kind: io::ErrorKind::BrokenPipe,
+                on_flush,
+            };
+            let mut stderr = Vec::new();
+            assert_eq!(
+                write_result(Ok(json!(true)), &mut stdout, &mut stderr),
+                ExitCode::SUCCESS
+            );
+            assert!(stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn other_output_errors_remain_failures() {
+        for on_flush in [false, true] {
+            let mut stdout = FailingWriter {
+                kind: io::ErrorKind::PermissionDenied,
+                on_flush,
+            };
+            let mut stderr = Vec::new();
+            assert_eq!(
+                write_result(Ok(json!(true)), &mut stdout, &mut stderr),
+                ExitCode::FAILURE
+            );
+            let error: Value = serde_json::from_slice(&stderr).unwrap();
+            assert_eq!(error["ok"], false);
+            assert_eq!(error["error"], "io_error");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("fixture output failure")
+            );
+        }
+    }
+
+    #[test]
+    fn action_failures_are_preserved_when_stderr_fails() {
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::PermissionDenied] {
+            for on_flush in [false, true] {
+                let mut stdout = Vec::new();
+                let mut stderr = FailingWriter { kind, on_flush };
+                assert_eq!(
+                    write_result(
+                        Err(Error::Cdp("fixture error".into())),
+                        &mut stdout,
+                        &mut stderr
+                    ),
+                    ExitCode::FAILURE
+                );
+                assert!(stdout.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn output_envelopes_and_escaping_are_unchanged() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let message = "中文\n\"quoted\"\\path\u{1b}";
+        let value = json!({"text":message});
+        assert_eq!(
+            write_result(Ok(value.clone()), &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stdout).unwrap(),
+            json!({"ok":true,"data":value})
+        );
+        assert!(stdout.ends_with(b"\n"));
+        assert_eq!(stdout.iter().filter(|b| **b == b'\n').count(), 1);
+        assert!(stderr.is_empty());
+        stdout.clear();
+        assert_eq!(
+            write_result(Err(Error::Cdp(message.into())), &mut stdout, &mut stderr),
+            ExitCode::FAILURE
+        );
+        assert!(stdout.is_empty());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stderr).unwrap(),
+            json!({"ok":false,"error":"cdp_error","message":format!("CDP command failed: {message}")})
+        );
+        assert!(stderr.ends_with(b"\n"));
+        assert_eq!(stderr.iter().filter(|b| **b == b'\n').count(), 1);
+    }
 
     #[test]
     fn page_target_flag_is_accepted_before_or_after_action_subcommand() {
