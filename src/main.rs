@@ -32,6 +32,11 @@ enum Command {
         command: AuthCommand,
     },
     Doctor,
+    /// Forward cloud browser traffic through this machine's network.
+    Tunnel {
+        #[command(subcommand)]
+        command: TunnelCommand,
+    },
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -46,6 +51,24 @@ enum Command {
         target_id: Option<String>,
         #[command(subcommand)]
         command: ActionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TunnelCommand {
+    /// Print the ready tunnel ID, then stay running until Ctrl+C or revocation.
+    Open {
+        /// Stop and revoke after this many seconds; 0 waits until interrupted.
+        #[arg(long, default_value_t = 0)]
+        duration: u64,
+    },
+    Status {
+        #[arg(long)]
+        tunnel_id: String,
+    },
+    Close {
+        #[arg(long)]
+        tunnel_id: String,
     },
 }
 
@@ -149,6 +172,9 @@ struct CreateSessionArgs {
     weak_lock: bool,
     #[arg(long)]
     official_proxy: bool,
+    /// ID from a running `tunnel open` process on the local network machine.
+    #[arg(long, conflicts_with = "official_proxy")]
+    local_proxy_tunnel_id: Option<String>,
     #[arg(long)]
     custom_image_id: Option<String>,
     #[arg(long)]
@@ -286,8 +312,49 @@ enum ActionCommand {
 }
 
 fn main() -> ExitCode {
-    let result = run(Cli::parse());
+    let cli = Cli::parse();
+    if let Command::Tunnel {
+        command: TunnelCommand::Open { duration },
+    } = cli.command
+    {
+        return match run_tunnel_open(duration) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                print_error(&mut io::stderr().lock(), &error);
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let result = run(cli);
     write_result(result, &mut io::stdout().lock(), &mut io::stderr().lock())
+}
+
+fn run_tunnel_open(duration: u64) -> Result<()> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let flag = interrupted.clone();
+    ctrlc::set_handler(move || flag.store(true, Ordering::Release))
+        .map_err(|_| Error::Tunnel("cannot install shutdown handler".into()))?;
+    let mut tunnel = Client::from_env()?.open_tunnel()?;
+    if !interrupted.load(Ordering::Acquire) {
+        print_json(
+            &mut io::stdout().lock(),
+            &json!({"ok":true,"data":{
+                "tunnel_id":tunnel.id(),"region_id":tunnel.region_id(),"ready":true
+            }}),
+        )?;
+    }
+    let started = std::time::Instant::now();
+    while !interrupted.load(Ordering::Acquire)
+        && tunnel.is_running()
+        && (duration == 0 || started.elapsed() < Duration::from_secs(duration))
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    tunnel.close()
 }
 
 fn write_result(
@@ -329,6 +396,17 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Auth { command } => run_auth(command),
         Command::Doctor => doctor(),
+        Command::Tunnel { command } => {
+            let client = Client::from_env()?;
+            match command {
+                TunnelCommand::Open { .. } => unreachable!("foreground tunnel handled by main"),
+                TunnelCommand::Status { tunnel_id } => client.tunnel_status(&tunnel_id),
+                TunnelCommand::Close { tunnel_id } => {
+                    client.close_tunnel(&tunnel_id)?;
+                    Ok(json!({"tunnel_id":tunnel_id,"closed":true}))
+                }
+            }
+        }
         Command::Session { command } => run_session(Client::from_env()?, command),
         Command::Context { command } => run_context(Client::from_env()?, command),
         Command::Action { command, target_id } => {
@@ -398,6 +476,9 @@ fn run_session(client: Client, command: SessionCommand) -> Result<Value> {
                 context_description: args.context_description,
                 weak_lock: args.weak_lock.then_some(true),
                 official_proxy: args.official_proxy.then_some(true),
+                proxy: args
+                    .local_proxy_tunnel_id
+                    .map(|id| json!({"type":"local","tunnel_id":id})),
                 custom_image_id: args.custom_image_id,
                 window_size: args.window_size,
                 downloads: args.downloads.then_some(json!({"enabled":true})),
@@ -596,6 +677,7 @@ fn error_kind(error: &Error) -> &'static str {
         Error::Json(_) => "json_error",
         Error::Io(_) => "io_error",
         Error::Cdp(_) => "cdp_error",
+        Error::Tunnel(_) => "tunnel_error",
     }
 }
 fn print_json(writer: &mut impl Write, value: &Value) -> io::Result<()> {

@@ -19,7 +19,7 @@ or omit it to use `Agent`. Credentials are stored at
 `~/.config/lexmount/browser-cli/credentials.json` with mode `0600` on Unix and
 are never printed.
 
-All commands emit one JSON document. Run `browser-cli --help` for the complete
+Commands emit one JSON document; `tunnel open` emits its ready result before staying alive. Run `browser-cli --help` for the complete
 surface.
 
 ### Errors and output pipes
@@ -45,6 +45,70 @@ Other output write/flush errors still exit with status 1. An operation that
 failed still exits with status 1 even if stderr is closed and cannot report the
 error. These source changes require a new binary; updating Skill instructions
 does not change an already installed CLI.
+
+## Local network proxy tunnels
+
+Introduced in 1.3.0. This requires a newly built or published binary; updating the
+Skill alone does not add the commands. `tunnel open` runs on the machine whose
+network/VPN the cloud browser should use:
+
+```bash
+# Terminal 1: keep running on the local network machine.
+browser-cli tunnel open
+# Prints once, only after the gateway is ready:
+# {"ok":true,"data":{"tunnel_id":"lt1.…","region_id":"nanjing-1","ready":true}}
+
+# Terminal 2: use the same account/project and API environment.
+browser-cli session create --local-proxy-tunnel-id TUNNEL_ID
+browser-cli action open-url --session-id SESSION_ID --url https://oa.internal/
+browser-cli tunnel status --tunnel-id TUNNEL_ID
+browser-cli session close --session-id SESSION_ID
+# Ctrl+C in terminal 1, or:
+browser-cli tunnel close --tunnel-id TUNNEL_ID
+```
+
+The tunnel command stays in the foreground after flushing its JSON result.
+Keep that process alive while sessions need the tunnel. `--duration SECONDS`
+can bound its lifetime (default 0 means until Ctrl+C, termination, or server
+revocation). Ctrl+C/SIGTERM stops forwarding and revokes the tunnel; closing it
+from another process also stops forwarding. Abrupt process loss is handled by
+the gateway heartbeat/lease expiration. Closing a tunnel does not close browser
+sessions or stop their runtime billing; close those sessions separately. The
+tunnel also does not send browser-session keepalives.
+
+Session creation pins the region encoded in the tunnel ID. A conflicting
+`LEXMOUNT_REGION`, `--official-proxy`, or a non-`normal` browser mode is rejected.
+The project needs the server's `custom_proxy` capability. A closed/offline or
+foreign-project tunnel is rejected by the server. No direct/cloud-network
+fallback is attempted. Existing action/CDP commands do not need additional flags.
+
+Destination DNS uses the local OS resolver, including hosts/VPN configuration,
+and TCP connects from this machine. HTTP, HTTPS, WebSocket and secure WebSocket
+bytes pass through unchanged. It does not import local browser cookies, trust
+stores or integrated login, and is not a general VPN/UDP tunnel. The selected
+browser sessions can reach destinations accessible from the tunnel machine;
+keep the connector running only for the sessions you intend to grant access.
+
+The reverse WSS uses short, single-use tickets and `lexmount.local-proxy.v1`;
+API keys and tickets are never printed or placed in its URL. It requires WSS
+except for loopback test fixtures, validates TLS, and rejects redirects. The
+connector's WSS honors the same HTTP CONNECT environment proxy settings as CDP;
+local destination TCP is direct through the OS network. Reconnect requests a new
+ticket and waits for ready again. Existing TCP streams are closed and are never
+replayed. The initial JSON is a startup readiness snapshot; query `tunnel status`
+for server state after a later disconnect.
+
+The transport limits each connection to 128 streams, each direction to a 256 KiB
+credit window, and data frames to 64 KiB. Credits are returned only after writing
+bytes to local TCP. Half-close preserves the reverse direction. DNS/TCP connects
+have a 15-second deadline; DNS uses the bounded OS resolver described below.
+Ready waits and WebSocket connection attempts also have bounded deadlines.
+
+Rust callers use `Client::open_tunnel()`, retain the returned `LocalTunnel`, and
+set `CreateSession.proxy` to `{"type":"local","tunnel_id":tunnel.id()}`. The handle
+exposes `ready()`, `id()`, `region_id()`, and `close()`. Drop performs best-effort
+revocation; call `close()` explicitly to observe cleanup errors. An owned handle
+must outlive its sessions' network use.
 
 ## Cloud runtime proxies
 
@@ -86,8 +150,8 @@ automatic action retries. These changes require a new CLI release; published
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.2.4 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.2.4 only after its binaries and checksums are published
+1.3.0 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.3.0 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
@@ -199,7 +263,7 @@ overwrite an existing release with changed binaries.
    `skills/lexmount-browser/scripts/bootstrap.ps1` and `bootstrap.sh`.
 2. Run `.github/scripts/test-release-version.ps1` with Windows PowerShell 5.1
    or PowerShell 7, then `.github/scripts/verify-release-version.ps1 -ReleaseTag
-   v1.2.4` (substitute the intended version). Complete CI and merge the PR.
+   v1.3.0` (substitute the intended version). Complete CI and merge the PR.
 3. Create the matching tag **on that merged commit**. Typing a new tag or
    release title in GitHub does not update any source version. The release
    workflow rejects inconsistent versions before building, signing or uploading.

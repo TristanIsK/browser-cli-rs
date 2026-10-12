@@ -12,6 +12,11 @@ browser-cli auth login [--client-name "NAME"]
 browser-cli session create [--browser-mode normal|light]
   [--context-id ID --context-mode read_write|read_only]
   [--downloads] [--recording] [--window-size 1920,1080]
+  [--official-proxy | --local-proxy-tunnel-id TUNNEL_ID]
+browser-cli tunnel open [--duration SECONDS]
+browser-cli tunnel status --tunnel-id TUNNEL_ID
+browser-cli tunnel close --tunnel-id TUNNEL_ID
+
 browser-cli session list [--status active]
 browser-cli session get --session-id ID
 browser-cli session targets --session-id ID
@@ -89,3 +94,27 @@ Use temporary sessions for public browsing. Use a dedicated persistent Context p
 `wait-text` uses case-insensitive normalized contains matching by default. Add
 `--exact` only when the entire normalized text must match. The obsolete
 `--match contains` form is not supported.
+
+## Local network proxy (1.3.0)
+
+Check that the installed binary lists `tunnel` and
+`session create --local-proxy-tunnel-id`. Run `tunnel open` on the machine whose
+local/VPN network is needed, keep that process running, and read its single
+flushed JSON ready result. In a separate invocation create a normal session with
+that tunnel ID, then use existing actions. The tunnel ID pins the region; use
+the same project and API environment. It conflicts with `--official-proxy` and
+a different `LEXMOUNT_REGION`. The server requires `custom_proxy` capability.
+
+This grants selected cloud browser sessions access through that machine's local
+DNS and TCP connections. It does not copy cookies or OS login, or tunnel UDP.
+Do not start a local connector on a different machine from the intended network.
+There is no cloud/direct fallback on tunnel failure. Reconnection terminates old
+TCP streams; it never replays requests or browser actions. `tunnel status` checks
+current server state; the initial ready output is not a continuous status feed.
+
+Close browser sessions when done, then stop the foreground connector with Ctrl+C
+(or `tunnel close --tunnel-id ID`). Closing the tunnel does not close sessions or
+stop session billing. `--duration` limits tunnel lifetime and defaults to 0
+(until interrupted or revoked). This process must remain alive between CLI
+invocations, and does not keep browser sessions active by itself. Closing stdin
+is not the shutdown signal; use Ctrl+C/termination or the close command.

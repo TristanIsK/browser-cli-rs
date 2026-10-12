@@ -144,7 +144,7 @@ impl Client {
         Ok(request.send()?)
     }
 
-    fn json<T: DeserializeOwned>(
+    pub(crate) fn json<T: DeserializeOwned>(
         &self,
         method: Method,
         path: &str,
@@ -202,12 +202,63 @@ impl Client {
         Ok(bytes.to_vec())
     }
 
+    pub(crate) fn tunnel_client(&self) -> Result<Self> {
+        let mut client = self.clone();
+        client.http = HttpClient::builder()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        Ok(client)
+    }
+
+    pub(crate) fn tunnel_region_body(&self, id: Option<&str>) -> Result<Value> {
+        let region = id.map(crate::tunnels::tunnel_region).transpose()?;
+        if let (Some(requested), Some(actual)) = (&self.region, &region)
+            && requested != actual
+        {
+            return Err(Error::Config(
+                "local tunnel and configured region differ".into(),
+            ));
+        }
+        Ok(match region.as_ref().or(self.region.as_ref()) {
+            Some(region) => json!({"region_id": region}),
+            None => json!({}),
+        })
+    }
+
     pub fn create_session(
         &self,
         request: CreateSession,
         poll_timeout: Duration,
     ) -> Result<Session> {
-        let body = self.body_with_region(serde_json::to_value(request)?);
+        let local_id = request
+            .proxy
+            .as_ref()
+            .filter(|p| p["type"] == "local")
+            .map(|p| {
+                p["tunnel_id"]
+                    .as_str()
+                    .ok_or_else(|| Error::Config("local proxy requires tunnel_id".into()))
+            })
+            .transpose()?;
+        let region = if let Some(id) = local_id {
+            if request.official_proxy == Some(true) {
+                return Err(Error::Config(
+                    "local and official proxies are mutually exclusive".into(),
+                ));
+            }
+            if request.browser_mode != "normal" {
+                return Err(Error::Config(
+                    "local proxy requires normal browser mode".into(),
+                ));
+            }
+            Some(self.tunnel_region_body(Some(id))?)
+        } else {
+            None
+        };
+        let mut body = self.body_with_region(serde_json::to_value(request)?);
+        if let Some(region) = region {
+            body["region_id"] = region["region_id"].clone();
+        }
         let accepted: Value = self.json(Method::POST, "/instance/v2", Some(body))?;
         let session_id = accepted
             .get("session_id")

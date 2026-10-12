@@ -12,7 +12,7 @@ use tungstenite::Message;
 use crate::{Error, Result};
 
 mod click;
-mod proxy;
+pub(crate) mod proxy;
 
 pub struct Cdp {
     socket: proxy::Socket,

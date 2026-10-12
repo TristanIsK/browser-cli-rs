@@ -21,7 +21,7 @@ use crate::{Error, Result};
 
 mod resolver;
 
-pub(super) type Socket = WebSocket<MaybeTlsStream<ConnectionStream>>;
+pub(crate) type Socket = WebSocket<MaybeTlsStream<ConnectionStream>>;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -76,6 +76,49 @@ fn connect_with_deadline(url: &str, matcher: &Matcher, deadline: Deadline) -> Re
 }
 
 fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Socket> {
+    connect_transport(url, matcher, deadline, None).map(|(socket, _)| socket)
+}
+
+// Single attempt: tickets must never be forwarded across WebSocket redirects.
+pub(crate) fn connect_tunnel(url: &str, ticket: &str) -> Result<(Socket, Arc<TcpStream>)> {
+    connect_transport(
+        url,
+        &Matcher::from_env(),
+        Deadline::new(TIMEOUT),
+        Some(ticket),
+    )
+}
+
+pub(crate) fn connect_local_tcp(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    cancelled: &AtomicBool,
+) -> Result<TcpStream> {
+    let deadline = Deadline::new(timeout);
+    let addresses = resolver::resolve(host, port, deadline, "local_dns")?;
+    for address in addresses {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Ok(stream) = TcpStream::connect_timeout(&address, deadline.remaining("local_tcp")?) {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            stream.set_nodelay(true)?;
+            stream.set_nonblocking(true)?;
+            return Ok(stream);
+        }
+    }
+    Err(Error::Tunnel("local connection failed".into()))
+}
+
+fn connect_transport(
+    url: &str,
+    matcher: &Matcher,
+    deadline: Deadline,
+    ticket: Option<&str>,
+) -> Result<(Socket, Arc<TcpStream>)> {
     let destination = destination(url)?;
     let proxy = matcher.intercept(&destination);
     // ponytail: HTTP CONNECT only. Never silently retry a proxy failure direct.
@@ -145,22 +188,57 @@ fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Sock
         "websocket_handshake"
     };
     deadline.remaining(stage)?;
-    let (socket, _) = tungstenite::client_tls(url, stream).map_err(|error| {
-        deadline.normalize(
-            match error {
-                HandshakeError::Failure(error) => Error::from(error),
-                HandshakeError::Interrupted(_) => {
-                    Error::Cdp("WebSocket handshake interrupted".into())
-                }
-            },
-            stage,
+    use tungstenite::client::IntoClientRequest;
+    let mut request = url.into_client_request()?;
+    let config = if let Some(ticket) = ticket {
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {ticket}")
+                .parse()
+                .map_err(|_| Error::Config("invalid tunnel ticket".into()))?,
+        );
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            "lexmount.local-proxy.v1".parse().unwrap(),
+        );
+        Some(
+            tungstenite::protocol::WebSocketConfig::default()
+                .write_buffer_size(0)
+                .max_write_buffer_size(2 * 65536 + 4096)
+                .max_message_size(Some(65536 + 4))
+                .max_frame_size(Some(65536 + 4)),
         )
-    })?;
+    } else {
+        None
+    };
+    let (socket, response) = tungstenite::client_tls_with_config(request, stream, config, None)
+        .map_err(|error| {
+            deadline.normalize(
+                match error {
+                    HandshakeError::Failure(error) => Error::from(error),
+                    HandshakeError::Interrupted(_) => {
+                        Error::Cdp("WebSocket handshake interrupted".into())
+                    }
+                },
+                stage,
+            )
+        })?;
     deadline.remaining(stage)?;
     timeout_handle.set_read_timeout(None)?;
     timeout_handle.set_write_timeout(None)?;
     connected.store(true, Ordering::Relaxed);
-    Ok(socket)
+    if ticket.is_some()
+        && response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|h| h.to_str().ok())
+            != Some("lexmount.local-proxy.v1")
+    {
+        return Err(Error::Tunnel(
+            "gateway did not select the local proxy protocol".into(),
+        ));
+    }
+    Ok((socket, timeout_handle))
 }
 
 #[derive(Clone, Copy)]
@@ -222,7 +300,7 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 // Each underlying I/O uses the remaining budget, including TLS handshake
 // loops and peers that keep trickling bytes. Disabled after the WS upgrade.
 #[derive(Debug)]
-pub(super) struct ConnectionStream {
+pub(crate) struct ConnectionStream {
     stream: Arc<TcpStream>,
     deadline: Instant,
     connected: Arc<AtomicBool>,
