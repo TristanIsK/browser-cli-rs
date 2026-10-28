@@ -1,0 +1,29 @@
+{
+  "id": "lexmount-cloud-browser",
+  "name": "LexMount Cloud Browser",
+  "version": "2.0.0",
+  "description": "Browse websites through LexMount remote MCP with an OpenClaw Skill. Defaults to the international site; China is an explicit configuration choice. Requires LexMount OAuth.",
+  "skills": [
+    "./skills/lexmount-browser"
+  ],
+  "mcpServers": {
+    "lexmount-browser": {
+      "transport": "streamable-http",
+      "url": "https://browser.lexmount.com/chatgpt-app/mcp",
+      "auth": "oauth",
+      "oauth": {
+        "scope": "browser.session:create",
+        "redirectUrl": "http://127.0.0.1:8989/oauth/callback",
+        "clientMetadataUrl": "https://raw.githubusercontent.com/TristanIsK/browser-cli-rs/codex/openclaw-skill-mcp/plugins/openclaw/oauth-client.json"
+      },
+      "connectionTimeoutMs": 30000,
+      "requestTimeoutMs": 60000,
+      "enabled": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

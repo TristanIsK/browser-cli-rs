@@ -1,0 +1,35 @@
+{
+  "name": "@tristanisk/lexmount-cloud-browser",
+  "version": "2.0.0",
+  "description": "Browse websites through LexMount remote MCP with an OpenClaw Skill. Defaults to the international site; China is an explicit configuration choice. Requires LexMount OAuth.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TristanIsK/browser-cli-rs.git",
+    "directory": "plugins/openclaw"
+  },
+  "files": [
+    "openclaw.plugin.json",
+    "index.js",
+    "oauth-client.json",
+    "skills",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.10.8"
+    },
+    "build": {
+      "openclawVersion": "2026.10.8"
+    },
+    "install": {
+      "clawhubSpec": "@tristanisk/lexmount-cloud-browser",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.10.8"
+    }
+  }
+}

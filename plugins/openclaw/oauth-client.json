@@ -1,0 +1,15 @@
+{
+  "client_id": "https://raw.githubusercontent.com/TristanIsK/browser-cli-rs/codex/openclaw-skill-mcp/plugins/openclaw/oauth-client.json",
+  "client_name": "LexMount Cloud Browser for OpenClaw",
+  "client_uri": "https://github.com/TristanIsK/browser-cli-rs",
+  "redirect_uris": [
+    "http://127.0.0.1:8989/oauth/callback"
+  ],
+  "grant_types": [
+    "authorization_code"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "token_endpoint_auth_method": "none"
+}
