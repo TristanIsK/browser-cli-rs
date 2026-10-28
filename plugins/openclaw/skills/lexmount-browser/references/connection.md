@@ -11,6 +11,8 @@ imported nor deleted.
 First inspect `openclaw mcp list` and the effective plugin configuration.
 The 2026.10.8 `mcp login` command reads operator-configured servers, so save
 an explicit server definition before login when only the plugin default exists.
+A saved operator definition survives plugin disablement or uninstall. To stop
+that connection when requested, use `openclaw mcp configure lexmount-browser --disable`.
 Do not replace an existing operator override or enable a disabled server without
 the user's request. Retain unrelated headers, filters, timeouts and settings.
 

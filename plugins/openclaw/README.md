@@ -19,6 +19,10 @@ or persistent website contexts. The separate CLI Skill is unchanged.
 Follow [connection setup](skills/lexmount-browser/references/connection.md).
 The initial operator configuration is necessary for `openclaw mcp login` on
 2026.10.8: that command does not resolve a manifest-only MCP server.
+The saved operator definition is independent of plugin enablement. To stop MCP
+access when disabling or uninstalling the plugin, also run
+`openclaw mcp configure lexmount-browser --disable`. This retains credentials
+and configuration; use the host logout command only when revocation is intended.
 
 Once configured, explicitly switch to China with:
 
