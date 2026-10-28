@@ -15,12 +15,17 @@ Target: OpenClaw 2026.10.8, Node.js 24.22.1, macOS arm64.
   The site is edited as a URL, not through a custom dropdown.
 - Both sites currently advertise PKCE S256, public client metadata documents,
   and the `browser.session:create` scope.
+- International OAuth completed through the native OpenClaw login command and
+  this public client registration; the host confirmed credentials saved.
+- The real OpenClaw MCP runtime discovered 11 tools, created a temporary browser,
+  opened Example.com, verified page text, received a PNG screenshot, requested
+  close, and subsequently queried the session with status `closed`.
+- ClawHub publication dry run accepted the package and exact source binding.
 
 Still required before publication:
 
-- Complete OAuth through this OpenClaw client metadata registration.
-- Create, navigate, read, screenshot and close via the actual OpenClaw MCP runtime.
-- ClawHub publisher login, exact-commit source binding, upload and review result.
+- ClawHub upload and review result.
 
 This record does not claim Windows/Linux host acceptance, market publication,
-Control UI OAuth callback compatibility or an AI-driven natural-language run.
+China production OAuth, Control UI OAuth callback compatibility or an AI-driven
+natural-language run.
